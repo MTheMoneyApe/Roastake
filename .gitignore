@@ -1,0 +1,30 @@
+# Node
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Rust
+target/
+**/target/
+Cargo.lock.tmp
+
+# WASM artifacts
+*.wasm
+*.wasm.gz
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.secrets/
+*.pem
+*.key
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
