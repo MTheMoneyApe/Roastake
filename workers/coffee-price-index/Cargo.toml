@@ -1,0 +1,17 @@
+[package]
+name = "roastake-coffee-price-index"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OutLayer WASI worker for ROASTAKE Coffee Price Index calculation"
+
+[[bin]]
+name = "roastake-coffee-price-index"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+roastake-shared = { path = "../../packages/shared" }

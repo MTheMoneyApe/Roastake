@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "packages/shared",
+    "contracts/oracle-adapter",
+    "workers/coffee-price-index",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["ROASTAKE Core Engineering <engineering@roastake.fi>"]
+license = "Apache-2.0"
+repository = "https://github.com/MTheMoneyApe/Roastake"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

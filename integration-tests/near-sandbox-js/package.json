@@ -1,0 +1,24 @@
+{
+  "name": "roastake-near-sandbox-js",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "NEAR Sandbox integration test harness for ROASTAKE contracts",
+  "scripts": {
+    "test": "NEAR_WORKSPACES_NETWORK=sandbox node --test --test-concurrency=1 test/*.test.mjs",
+    "test:smoke": "NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-smoke.test.mjs",
+    "test:compat": "NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-wasm-compatibility.test.mjs",
+    "test:legacy-compat": "NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-wasm-compatibility.test.mjs",
+    "test:abi-smoke": "NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-abi-smoke.test.mjs",
+    "test:e2e": "NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-e2e.test.mjs",
+    "test:hardening": "NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-admin-hardening.test.mjs",
+    "test:release-candidate": "NEAR_WORKSPACES_NETWORK=sandbox node --test --test-concurrency=1 test/sandbox-abi-smoke.test.mjs test/sandbox-e2e.test.mjs test/sandbox-admin-hardening.test.mjs"
+  },
+  "dependencies": {
+    "near-workspaces": "5.0.0"
+  },
+  "engines": {
+    "node": ">=20.15.0",
+    "pnpm": ">=9.0.0"
+  }
+}

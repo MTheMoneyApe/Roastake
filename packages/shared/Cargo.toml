@@ -1,0 +1,14 @@
+[package]
+name = "roastake-shared"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared schemas, types, and validation logic for ROASTAKE contracts and workers"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
