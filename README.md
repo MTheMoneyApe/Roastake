@@ -66,7 +66,7 @@ In ROASTAKE, NEAR Protocol specifically provides:
 | **Perpetuals Fixed-Point Core** | `packages/perps-core/` | **`15` Rust unit tests PASS** (`roastake-perps-core`) | Isolated deterministic margin, PnL, funding, LP NAV & solvency math *(Evaluation-Only)* |
 | **Shared OutLayer Schemas & Fixed-Point** | `packages/shared/` | **`22` Rust unit tests PASS** (`roastake-shared`, Apache-2.0) | Shared OutLayer schemas, decimal parser, CEPEA/ICE unit math & Testnet account guards |
 | **Persistent Market History Indexer** | `services/perps-indexer/` | **Verified (`node --test`: `21` tests across `7` suites PASS + persisted Arabica/Robusta/Gesha stores)** | Standalone 3-market Node.js service polling FastNear finalized Testnet blocks (`testnet.neardata.xyz`), isolating per-market `HistoryStore`s (`data/perps-indexer/` for Arabica, `markets/robusta/`, and `markets/gesha/`), separating `seedBackfill` from contiguous `forwardScan`/`range_backfill`, surfacing explicit `coverageGaps` & `lagBlocks`, bounded catch-up + HTTP `429`/`Retry-After`/jitter backoff, non-interpolated `ORACLE SAMPLE OHLC`, honest volume checks, and read-only HTTP JSON at `127.0.0.1:8787` (`/v1/perps/markets`, `/v1/perps/arabica/*`, `/v1/perps/robusta/*`, `/v1/perps/gesha/*`) *(Evaluation-Only)* |
-| **Companion Trading UI** | `MTheMoneyApe/pixel-perfect-replica` (`main`) | Verified locally (`96/96` Vitest across `13` files, `tsc`, ESLint on Perps/Oracle/Wallet files `0` errors, Vite/Nitro build PASS) | React 19 / TanStack Start 3-market terminal (`/app/perps`, `/app/perps/COFFEE-ARABICA-TESTNET-USD`, `/app/perps/COFFEE-ROBUSTA`, `/app/perps/COFFEE-GESHA`) + HOT Connect / Meteor Wallet + Lightweight Charts `5.3.0` (`127.0.0.1:8787` indexer client showing `PARTIAL COVERAGE` vs `CONTIGUOUS COVERAGE`, `FINALIZED BLOCK`, `INDEXER LAG`, and verified RPC fallback) |
+| **Companion Trading UI** | `MTheMoneyApe/pixel-perfect-replica` (`hackathon-submission`) | Verified locally (`114/114` Vitest across `15` files, `tsc`, ESLint on Perps/Oracle/Wallet files `0` errors, Vite/Nitro build PASS) | React 19 / TanStack Start 3-market terminal (`/app/perps`, `/app/perps/COFFEE-ARABICA-TESTNET-USD`, `/app/perps/COFFEE-ROBUSTA`, `/app/perps/COFFEE-GESHA`) + HOT Connect / Meteor Wallet + Lightweight Charts `5.3.0` (`127.0.0.1:8787` indexer client showing `PARTIAL COVERAGE` vs `CONTIGUOUS COVERAGE`, `FINALIZED BLOCK`, `INDEXER LAG`, and verified RPC fallback) |
 | **Oracle Adapter *(Independent Workstream)*** | `contracts/oracle-adapter/` | **Deployed separately** (`roastake-oracle-v1.testnet`) + `96` unit tests + Sandbox tests | Separate `outlayer.testnet` requester storing historical `ARABICA-MONTHLY-IMF/USD` |
 | **WASI Worker *(Independent Workstream)*** | `workers/coffee-price-index/` | Compiled `wasm32-wasip2` + `16` unit tests | Off-chain OutLayer TEE worker fetching monthly IMF PCPS data (`api.imf.org`) |
 | **Sandbox Harness** | `integration-tests/near-sandbox-js/` | Local `near-workspaces 5.0.0` suites (`sandbox-perpetuals.test.mjs`, `mock-ft`, `mock-outlayer`) | Automated multi-contract adversarial & integration tests |
@@ -119,11 +119,11 @@ Judges can verify tests, UI, and live Testnet solvency **with zero Testnet token
    ```bash
    git clone https://github.com/MTheMoneyApe/Roastake.git
    cd Roastake
-   git checkout feat/outlayer-near-testnet-foundation
+   git checkout hackathon-submission
    cargo test --workspace
    ```
    *(On Windows, `powershell -ExecutionPolicy Bypass -File scripts/run-tests.ps1` configures Cargo/NASM PATH automatically and executes `cargo test --workspace`.)*
-   **See:** All **`182` Rust workspace unit tests pass (`0` failed)**: `roastake-coffee-price-index` (`16`), `roastake-oracle-adapter` (`96`), `roastake-perpetuals` (`33`), `roastake-perps-core` (`15`), `roastake-shared` (`22`).
+   **See:** The workspace test command must complete with all tests passing (`0` failed). Cargo prints the authoritative test totals for the exact checkout; this README intentionally avoids freezing a historical workspace count as crates and fixtures evolve.
 
 2. **Do *(Optional NEAR Sandbox Multi-Contract Suite on Linux/WSL2)*:**
    ```bash
@@ -152,6 +152,7 @@ Judges can verify tests, UI, and live Testnet solvency **with zero Testnet token
    ```bash
    git clone https://github.com/MTheMoneyApe/pixel-perfect-replica.git Roastake-Frontend
    cd Roastake-Frontend
+   git checkout hackathon-submission
    npm install
    npm run test
    npm run build
@@ -159,7 +160,7 @@ Judges can verify tests, UI, and live Testnet solvency **with zero Testnet token
    ```
    Open `http://127.0.0.1:3000/app/perps`, `http://127.0.0.1:3000/app/perps/COFFEE-ARABICA-TESTNET-USD`, `http://127.0.0.1:3000/app/perps/COFFEE-ROBUSTA`, `http://127.0.0.1:3000/app/perps/COFFEE-GESHA`, and `http://127.0.0.1:3000/app/activity`.
    **See:**
-   - `npm run test` reports `13 passed (13)` files / **`96 passed (96)`** tests.
+   - `npm run test` reports **`15 passed (15)`** files / **`114 passed (114)`** tests in the latest recorded release verification.
    - All three live markets — Arabica (`$10.00/kg`, seq `#5`), Robusta (`$5.00/kg`, seq `#3`), and Gesha (`$25.00/kg`, seq `#4`) — display live on-chain `5x · 20.00% IM · 8.00% MM`, `Synthetic Testnet Oracle Notice`, `LP Vault`, isolated TradingView Lightweight Charts (`INDEXER CONNECTED`, `PARTIAL COVERAGE` vs `CONTIGUOUS COVERAGE`, `FINALIZED BLOCK`, `INDEXER LAG`, or verified RPC fallback when offline, `ORACLE SAMPLE OHLC` disabled on insufficient buckets, honest `Volume unavailable`), and verified NEAR Explorer links (`M04.6-G`, `M04.14`, `M04.15`).
    - Admin operator panel remains hidden unless connected as `roastake-dev-mta.testnet`.
 
@@ -275,7 +276,7 @@ Per [NEAR HACKATHON rules (`HACKATHON.md`)](https://nearhackathon.com/HACKATHON.
 - **Event Window:** Announced `2026-10-19`, official hackathon start `2026-11-01T00:00:00Z`, submission deadline `2026-11-14T23:59:00Z` (`Q-001` covers work from `2026-10-19` through `2026-11-14`).
 - **Backend (`Roastake`):** Initial commit `0d130ff` (`2026-11-09 21:36:44 +0100`). All Rust contracts (`oracle-adapter`, `perpetuals`), shared fixed-point crates, WASI worker, Sandbox tests, and deploy scripts were built inside the hackathon window.
 - **Companion Frontend (`pixel-perfect-replica`):** Initial commit `4c3b15c` (`2026-11-02 13:30:43 +0000`, `template: tanstack_start_ts_current`) started from a **TanStack Start / Vite / Lovable React scaffold** (`shadcn/ui` primitives, Tailwind CSS, simulated coffee marketplace/UI demo views), which count cleanly as UI boilerplate/starter components (`Q-005`). All NEAR integrations (`@hot-labs/near-connect` 0.12.0 wallet hub, `roastake-oracle-v1.testnet` dashboard, `contracts/perpetuals` three-market BigInt order terminal, `M04.6-G` / `M04.14` / `M04.15` verifiers, and `96`-test Vitest suite across `13` files) were built during the hackathon window.
-- **Publication Note:** Check local working-tree sync status before deadline; local uncommitted changes in both repositories are scheduled for final review prior to public push.
+- **Publication Note:** The public hackathon submission snapshot is published on branch `hackathon-submission` in both repositories. Use the branch links above when reviewing the submitted source; historical local working-tree notes are no longer applicable.
 
 ---
 
@@ -307,13 +308,10 @@ ear-sandbox binary is incompatible with Windows x64; use WSL2 or CI on Windows.
 
 **Reproducibility**
 
-- Frontend: cd Roastake-Frontend && npm install && npm run dev (http://localhost:8080). Routes: /app/swap (Mini Swap), /app/perps (Perps).
-- Backend Rust tests: cargo test -p roastake-coffee-token (9 tests).
-- Frontend tests: 
-pm run test (114 tests), 
-px tsc --noEmit, 
-pm run build.
-- Sandbox test (Linux/WSL2 only): cd integration-tests/near-sandbox-js && pnpm install --frozen-lockfile && NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-perpetuals.test.mjs (4/4 pass).
+- **Frontend:** Clone the public frontend repository, check out `hackathon-submission`, then run `npm install && npm run dev` (development server: `http://127.0.0.1:3000`). Routes: `/app/swap` (Mini Swap) and `/app/perps` (Perps).
+- **Backend Coffee Token tests:** `cargo test -p roastake-coffee-token` (latest recorded focused result: 9 tests).
+- **Frontend release verification:** `npm run test` (114/114 tests across 15 files), `npx tsc --noEmit`, and `npm run build`.
+- **Sandbox test (Linux/WSL2 only):** `cd integration-tests/near-sandbox-js && pnpm install --frozen-lockfile && NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-perpetuals.test.mjs` (4/4 pass in the recorded run).
 
 **AI, libraries and templates**
 
@@ -323,4 +321,4 @@ pm run build.
 
 **Pre-hackathon baseline**
 
-Pre-hackathon baseline is main (commit 1d38885). Hackathon work is on eat/outlayer-near-testnet-foundation (HEAD a95511) plus uncommitted M04.18/M04.19 changes.
+Pre-hackathon baseline is `main` (commit `1d38885`). The public hackathon submission is maintained on branch `hackathon-submission`; see the branch history for the exact release commit.
