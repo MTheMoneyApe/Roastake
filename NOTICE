@@ -1,0 +1,11 @@
+ROASTAKE — Component Licensing Notice
+
+This repository contains components distributed under different license terms. The presence of the root LICENSE file does not replace the component-level licensing information documented in LICENSES.md.
+
+The Apache License, Version 2.0 applies only to the previously committed OutLayer materials and the shared/oracle-adapter components identified in Section 1 of LICENSES.md.
+
+The ROASTAKE Perps, Coffee Token and mock-ft components are subject to the ROASTAKE Evaluation-Only license identified in LICENSES.md and their applicable component-level license declarations.
+
+Third-party dependencies and materials retain their respective copyright notices and license terms.
+
+Refer to LICENSES.md and the applicable component license texts to determine the licensing terms for each component.
