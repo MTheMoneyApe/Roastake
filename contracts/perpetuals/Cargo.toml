@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: LicenseRef-ROASTAKE-Evaluation-Only
+# Copyright © 2026 @MTheMoneyApe. All rights reserved.
+
+[package]
+name = "roastake-perpetuals"
+version.workspace = true
+edition.workspace = true
+authors = ["@MTheMoneyApe"]
+license-file = "../../LICENSE-ROASTAKE-PERPS.md"
+publish = false
+repository.workspace = true
+description = "ROASTAKE NEAR Testnet Peer-to-Pool Perpetuals MVP contract"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { version = "5.30.1" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+roastake-perps-core = { path = "../../packages/perps-core" }
+roastake-shared = { path = "../../packages/shared" }
+
+[dev-dependencies]
+near-sdk = { version = "5.30.1", features = ["unit-testing"] }

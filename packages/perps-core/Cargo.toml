@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: LicenseRef-ROASTAKE-Evaluation-Only
+# Copyright © 2026 @MTheMoneyApe. All rights reserved.
+
+[package]
+name = "roastake-perps-core"
+version.workspace = true
+edition.workspace = true
+authors = ["@MTheMoneyApe"]
+license-file = "../../LICENSE-ROASTAKE-PERPS.md"
+publish = false
+repository.workspace = true
+description = "Core Perpetuals fixed-point, margin, funding, liquidation, LP NAV, and solvency math for ROASTAKE"
+
+[dependencies]
+serde = { workspace = true }
+roastake-shared = { path = "../shared" }

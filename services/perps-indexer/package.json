@@ -1,0 +1,12 @@
+{
+  "name": "roastake-perps-indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "SEE LICENSE IN ../../LICENSE-ROASTAKE-PERPS.md",
+  "scripts": {
+    "start": "node src/indexer.mjs",
+    "sync-once": "node src/indexer.mjs --once",
+    "test": "node --test test/*.test.mjs"
+  }
+}
