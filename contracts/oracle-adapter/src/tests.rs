@@ -3,21 +3,25 @@
 mod tests {
     use crate::outlayer::calculate_execution_cost;
     use crate::types::{
-        ClaimStatus, InsuranceCompensationStatus, PriceObservation, ReconcileOutcome, RefundStatus,
-        MAX_WORKER_DATA_CLASS_BYTES, MAX_WORKER_SOURCE_BYTES,
+        ClaimStatus, InsuranceCompensationStatus, MarketConfig, MarketSecretsRef, PriceObservation,
+        ReconcileOutcome, RefundStatus, MAX_WORKER_DATA_CLASS_BYTES, MAX_WORKER_SOURCE_BYTES,
     };
     use crate::{
-        RoastakeOracleAdapter, DISPUTE_RESOLUTION_DELAY_BLOCKS,
+        validate_worker_output, RoastakeOracleAdapter, DISPUTE_RESOLUTION_DELAY_BLOCKS,
         HARD_MAX_ACTIVE_INSURANCE_COMPENSATIONS, HARD_MAX_AUTHORIZED_REQUESTERS, HARD_MAX_MARKETS,
         HARD_MAX_OPEN_REQUESTS, OPEN_REQUEST_STORAGE_BUDGET_BYTES, STATE_GROWTH_MARGIN_BYTES,
         STATE_STORAGE_MARGIN_BYTES, STUCK_CLAIM_MIN_AGE_BLOCKS,
     };
-    use near_sdk::test_utils::VMContextBuilder;
+    use near_sdk::test_utils::{get_created_receipts, get_logs, VMContextBuilder};
     use near_sdk::{testing_env, AccountId, NearToken, PromiseResult, VMContext};
     use roastake_shared::{
         calculate_divergence_bps, format_display_price, ExecutionSource, RequestParams,
-        ResourceLimits, WorkerOutput, DATA_CLASS_SYNTHETIC, DECIMALS_COFFEE_INDEX,
-        DEFAULT_FIXTURE_PRICE_RAW, MARKET_GESHA_DEMO, SCHEMA_VERSION, UNIT_USD_PER_KG,
+        ResourceLimits, SecretsReference, WorkerInput, WorkerOutput, DATA_CLASS_LIVE_AGGREGATED,
+        DATA_CLASS_LIVE_VERIFIED, DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY, DATA_CLASS_SYNTHETIC,
+        DECIMALS_COFFEE_INDEX, DEFAULT_FIXTURE_PRICE_RAW, DEFAULT_FIXTURE_SOURCE,
+        DEFAULT_IMF_PCPS_SOURCE, HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC, MARKET_ARABICA_MONTHLY_IMF,
+        MARKET_GESHA_DEMO, MODE_FIXTURE, MODE_LIVE_INDEX, MODE_PUBLIC_BENCHMARK, SCHEMA_VERSION,
+        UNIT_USD_PER_KG,
     };
 
     fn alice() -> AccountId {
@@ -68,6 +72,36 @@ mod tests {
             TEST_MIN_OPERATING_RESERVE,
             None,
         )
+    }
+
+    const TEST_LIVE_MARKET: &str = "ARABICA-REF/USD";
+
+    fn sample_live_market_config(
+        symbol: &str,
+        secrets_ref: Option<MarketSecretsRef>,
+        min_source_count: u32,
+        max_source_spread_bps: u32,
+    ) -> MarketConfig {
+        MarketConfig {
+            symbol: symbol.to_string(),
+            description: "Commercial Washed Arabica Reference Index (Test Config)".to_string(),
+            decimals: DECIMALS_COFFEE_INDEX,
+            unit: UNIT_USD_PER_KG.to_string(),
+            min_price: near_sdk::json_types::U128(100_000_000), // $1.00/kg
+            max_price: near_sdk::json_types::U128(50_000_000_000), // $500.00/kg
+            max_price_age_sec: 3600,
+            max_divergence_bps: 2000,
+            wasm_url: "https://test.fastfs.io/roastake/worker.wasm".to_string(),
+            wasm_sha256: "abac707a27b4633857a9c2703a2cae67e18d5369e7d41daed946ad8945ffe2a6"
+                .to_string(),
+            build_target: "wasm32-wasip2".to_string(),
+            active: true,
+            worker_mode: MODE_LIVE_INDEX.to_string(),
+            secrets_ref,
+            min_source_count,
+            allow_synthetic: false,
+            max_source_spread_bps,
+        }
     }
 
     fn designate_and_promote(contract: &mut RoastakeOracleAdapter, nonce: u64, amount: NearToken) {
@@ -328,6 +362,8 @@ mod tests {
     #[test]
     fn test_stale_timestamp() {
         let mut contract = setup_contract();
+        let live_cfg = sample_live_market_config(TEST_LIVE_MARKET, None, 1, 500);
+        contract.add_market(live_cfg);
 
         let now_sec = 1_700_000_000u64;
         let mut context = VMContextBuilder::new();
@@ -337,12 +373,20 @@ mod tests {
             .attached_deposit(NearToken::from_millinear(50))
             .block_timestamp(now_sec * 1_000_000_000);
         testing_env!(context.build());
-        let _ = contract.request_price_update(MARKET_GESHA_DEMO.to_string());
+        let _ = contract.request_price_update(TEST_LIVE_MARKET.to_string());
 
         // Max age is 3600s. Observed at (now - 5000s) is stale.
-        let mut stale_output = WorkerOutput::fixture_gesha_demo();
-        stale_output.observed_at = now_sec - 5000;
-        stale_output.data_class = "LIVE_VERIFIED".to_string();
+        let stale_output = WorkerOutput {
+            schema_version: SCHEMA_VERSION,
+            market: TEST_LIVE_MARKET.to_string(),
+            price: "727794219".to_string(),
+            decimals: DECIMALS_COFFEE_INDEX,
+            unit: UNIT_USD_PER_KG.to_string(),
+            source: "barchart:KC".to_string(),
+            source_count: 1,
+            observed_at: now_sec - 5000,
+            data_class: DATA_CLASS_LIVE_VERIFIED.to_string(),
+        };
         let payload = serde_json::to_vec(&stale_output).unwrap();
 
         let mut cb_context = VMContextBuilder::new();
@@ -352,19 +396,25 @@ mod tests {
             .block_timestamp(now_sec * 1_000_000_000);
         set_test_env_with_promises(cb_context.build(), vec![PromiseResult::Successful(payload)]);
 
-        let res = contract.on_outlayer_execution(1, MARKET_GESHA_DEMO.to_string());
+        let res = contract.on_outlayer_execution(1, TEST_LIVE_MARKET.to_string());
         assert!(res.is_none(), "stale timestamp returns None");
+        assert!(
+            get_logs().iter().any(|l| l.contains("ERR_STALE_TIMESTAMP")),
+            "must fail specifically on ERR_STALE_TIMESTAMP"
+        );
         assert!(
             contract.get_pending_request(1).is_none(),
             "pending request cleaned up, not stuck"
         );
-        assert!(contract.get_price(MARKET_GESHA_DEMO.to_string()).is_none());
+        assert!(contract.get_price(TEST_LIVE_MARKET.to_string()).is_none());
     }
 
     // 10. Test Future Timestamp (rejected safely, pending request cleaned up)
     #[test]
     fn test_future_timestamp() {
         let mut contract = setup_contract();
+        let live_cfg = sample_live_market_config(TEST_LIVE_MARKET, None, 1, 500);
+        contract.add_market(live_cfg);
 
         let now_sec = 1_700_000_000u64;
         let mut context = VMContextBuilder::new();
@@ -374,12 +424,20 @@ mod tests {
             .attached_deposit(NearToken::from_millinear(50))
             .block_timestamp(now_sec * 1_000_000_000);
         testing_env!(context.build());
-        let _ = contract.request_price_update(MARKET_GESHA_DEMO.to_string());
+        let _ = contract.request_price_update(TEST_LIVE_MARKET.to_string());
 
         // Future timestamp (+500s exceeds 60s max drift)
-        let mut future_output = WorkerOutput::fixture_gesha_demo();
-        future_output.observed_at = now_sec + 500;
-        future_output.data_class = "LIVE_VERIFIED".to_string();
+        let future_output = WorkerOutput {
+            schema_version: SCHEMA_VERSION,
+            market: TEST_LIVE_MARKET.to_string(),
+            price: "727794219".to_string(),
+            decimals: DECIMALS_COFFEE_INDEX,
+            unit: UNIT_USD_PER_KG.to_string(),
+            source: "barchart:KC".to_string(),
+            source_count: 1,
+            observed_at: now_sec + 500,
+            data_class: DATA_CLASS_LIVE_VERIFIED.to_string(),
+        };
         let payload = serde_json::to_vec(&future_output).unwrap();
 
         let mut cb_context = VMContextBuilder::new();
@@ -389,13 +447,19 @@ mod tests {
             .block_timestamp(now_sec * 1_000_000_000);
         set_test_env_with_promises(cb_context.build(), vec![PromiseResult::Successful(payload)]);
 
-        let res = contract.on_outlayer_execution(1, MARKET_GESHA_DEMO.to_string());
+        let res = contract.on_outlayer_execution(1, TEST_LIVE_MARKET.to_string());
         assert!(res.is_none(), "future timestamp returns None");
+        assert!(
+            get_logs()
+                .iter()
+                .any(|l| l.contains("ERR_FUTURE_TIMESTAMP")),
+            "must fail specifically on ERR_FUTURE_TIMESTAMP"
+        );
         assert!(
             contract.get_pending_request(1).is_none(),
             "pending request cleaned up, not stuck"
         );
-        assert!(contract.get_price(MARKET_GESHA_DEMO.to_string()).is_none());
+        assert!(contract.get_price(TEST_LIVE_MARKET.to_string()).is_none());
     }
 
     // 11. Test Excessive Price Movement (rejected safely, preserves previous valid price)
@@ -662,7 +726,9 @@ mod tests {
                 "admin.near".parse().unwrap(), // Mainnet account!
                 Some(outlayer_contract()),
                 None,
-                None,
+                Some(
+                    "abac707a27b4633857a9c2703a2cae67e18d5369e7d41daed946ad8945ffe2a6".to_string(),
+                ),
                 TEST_MIN_OPERATING_RESERVE,
                 None,
             );
@@ -674,7 +740,9 @@ mod tests {
                 alice(),
                 Some("outlayer.near".parse().unwrap()), // Mainnet outlayer!
                 None,
-                None,
+                Some(
+                    "abac707a27b4633857a9c2703a2cae67e18d5369e7d41daed946ad8945ffe2a6".to_string(),
+                ),
                 TEST_MIN_OPERATING_RESERVE,
                 None,
             );
@@ -4125,6 +4193,9 @@ mod tests {
         );
 
         let mut contract = setup_contract();
+        let live_cfg = sample_live_market_config(TEST_LIVE_MARKET, None, 1, 500);
+        contract.add_market(live_cfg);
+
         let mut ctx = VMContextBuilder::new();
         ctx.current_account_id(oracle_contract())
             .predecessor_account_id(alice())
@@ -4132,19 +4203,19 @@ mod tests {
             .account_balance(NearToken::from_near(100))
             .block_timestamp(1_700_000_000_000_000_000);
 
-        // 1. Exact MAX_WORKER_SOURCE_BYTES (128 bytes) accepted
+        // 1. Exact MAX_WORKER_SOURCE_BYTES (128 bytes) accepted on live_index market
         testing_env!(ctx.build());
-        let _ = contract.request_price_update(MARKET_GESHA_DEMO.to_string());
+        let _ = contract.request_price_update(TEST_LIVE_MARKET.to_string());
         let valid_max_source = WorkerOutput {
             schema_version: SCHEMA_VERSION,
-            market: MARKET_GESHA_DEMO.to_string(),
+            market: TEST_LIVE_MARKET.to_string(),
             price: DEFAULT_FIXTURE_PRICE_RAW.to_string(),
             decimals: DECIMALS_COFFEE_INDEX,
             unit: UNIT_USD_PER_KG.to_string(),
             source: "a".repeat(MAX_WORKER_SOURCE_BYTES),
             source_count: 1,
             observed_at: 1_700_000_000,
-            data_class: DATA_CLASS_SYNTHETIC.to_string(),
+            data_class: DATA_CLASS_LIVE_VERIFIED.to_string(),
         };
         let mut cb_ctx = VMContextBuilder::new();
         cb_ctx
@@ -4158,12 +4229,12 @@ mod tests {
                 serde_json::to_vec(&valid_max_source).unwrap(),
             )],
         );
-        let stored = contract.on_outlayer_execution(1, MARKET_GESHA_DEMO.to_string());
+        let stored = contract.on_outlayer_execution(1, TEST_LIVE_MARKET.to_string());
         assert!(stored.is_some(), "source at exact 128 bytes must succeed");
 
         // 2. Just over MAX_WORKER_SOURCE_BYTES (129 ASCII bytes) rejected without corrupting state
         testing_env!(ctx.build());
-        let _ = contract.request_price_update(MARKET_GESHA_DEMO.to_string());
+        let _ = contract.request_price_update(TEST_LIVE_MARKET.to_string());
         let over_ascii = WorkerOutput {
             source: "b".repeat(MAX_WORKER_SOURCE_BYTES + 1),
             ..valid_max_source.clone()
@@ -4176,14 +4247,14 @@ mod tests {
         );
         assert!(
             contract
-                .on_outlayer_execution(2, MARKET_GESHA_DEMO.to_string())
+                .on_outlayer_execution(2, TEST_LIVE_MARKET.to_string())
                 .is_none(),
             "129-byte source must be rejected"
         );
         assert!(contract.get_pending_request(2).is_none());
         assert_eq!(
             contract
-                .get_price(MARKET_GESHA_DEMO.to_string())
+                .get_price(TEST_LIVE_MARKET.to_string())
                 .unwrap()
                 .nonce,
             1
@@ -4191,7 +4262,7 @@ mod tests {
 
         // 3. Multi-byte UTF-8 trap: 33 chars ('🦀' = 4 UTF-8 bytes each = 132 bytes > 128 even though 33 chars < 128)
         testing_env!(ctx.build());
-        let _ = contract.request_price_update(MARKET_GESHA_DEMO.to_string());
+        let _ = contract.request_price_update(TEST_LIVE_MARKET.to_string());
         let over_multibyte = WorkerOutput {
             source: "🦀".repeat(33),
             ..valid_max_source.clone()
@@ -4206,14 +4277,14 @@ mod tests {
         );
         assert!(
             contract
-                .on_outlayer_execution(3, MARKET_GESHA_DEMO.to_string())
+                .on_outlayer_execution(3, TEST_LIVE_MARKET.to_string())
                 .is_none(),
             "multi-byte UTF-8 source > 128 bytes must be rejected even if char count <= 128"
         );
         assert!(contract.get_pending_request(3).is_none());
         assert_eq!(
             contract
-                .get_price(MARKET_GESHA_DEMO.to_string())
+                .get_price(TEST_LIVE_MARKET.to_string())
                 .unwrap()
                 .nonce,
             1
@@ -4221,7 +4292,7 @@ mod tests {
 
         // 4. Oversized data_class (> MAX_WORKER_DATA_CLASS_BYTES = 32 bytes) rejected cleanly
         testing_env!(ctx.build());
-        let _ = contract.request_price_update(MARKET_GESHA_DEMO.to_string());
+        let _ = contract.request_price_update(TEST_LIVE_MARKET.to_string());
         let over_data_class = WorkerOutput {
             data_class: "D".repeat(MAX_WORKER_DATA_CLASS_BYTES + 1),
             ..valid_max_source
@@ -4234,14 +4305,14 @@ mod tests {
         );
         assert!(
             contract
-                .on_outlayer_execution(4, MARKET_GESHA_DEMO.to_string())
+                .on_outlayer_execution(4, TEST_LIVE_MARKET.to_string())
                 .is_none(),
             "data_class > 32 bytes must be rejected"
         );
         assert!(contract.get_pending_request(4).is_none());
         assert_eq!(
             contract
-                .get_price(MARKET_GESHA_DEMO.to_string())
+                .get_price(TEST_LIVE_MARKET.to_string())
                 .unwrap()
                 .nonce,
             1
@@ -4454,5 +4525,1067 @@ mod tests {
         let bob_credit = contract.get_pending_refund(bob()).unwrap();
         assert_eq!(bob_credit.in_flight_amount, deposit);
         assert_eq!(bob_credit.status, RefundStatus::InFlight);
+    }
+
+    // =========================================================================
+    // SECTION 10: MISSION M04.2b MARKET POLICY, WORKER ROUTING, SYNTHETIC
+    //             PROTECTION & SECRETS-REFERENCE FORWARDING TESTS
+    // =========================================================================
+
+    fn extract_outlayer_request_execution_args() -> serde_json::Value {
+        let receipts = get_created_receipts();
+        for receipt in receipts {
+            if receipt.receiver_id == outlayer_contract() {
+                for action in receipt.actions {
+                    if let near_sdk::mock::MockAction::FunctionCallWeight {
+                        method_name,
+                        args,
+                        ..
+                    } = action
+                    {
+                        if method_name == b"request_execution" {
+                            return serde_json::from_slice(&args)
+                                .expect("valid request_execution JSON args");
+                        }
+                    }
+                }
+            }
+        }
+        panic!(
+            "expected outgoing FunctionCallWeight receipt to outlayer.testnet::request_execution"
+        );
+    }
+
+    #[test]
+    fn test_m042b_market_config_policy_validation_and_gesha_defaults() {
+        let contract = setup_contract();
+
+        // Both GESHA-DEMO/USD (fixture) and ARABICA-MONTHLY-IMF/USD (public_benchmark)
+        // are initialized immediately with isolated policies; no live_index market is active yet.
+        assert_eq!(
+            contract.list_markets(),
+            vec![
+                MARKET_GESHA_DEMO.to_string(),
+                MARKET_ARABICA_MONTHLY_IMF.to_string()
+            ]
+        );
+        let gesha_cfg = contract
+            .get_market_config(MARKET_GESHA_DEMO.to_string())
+            .expect("GESHA-DEMO/USD initialized");
+        assert_eq!(gesha_cfg.worker_mode, MODE_FIXTURE);
+        assert!(gesha_cfg.allow_synthetic);
+        assert_eq!(gesha_cfg.min_source_count, 1);
+        assert_eq!(gesha_cfg.secrets_ref, None);
+        assert_eq!(gesha_cfg.max_source_spread_bps, 0);
+
+        let imf_init_cfg = contract
+            .get_market_config(MARKET_ARABICA_MONTHLY_IMF.to_string())
+            .expect("ARABICA-MONTHLY-IMF/USD initialized immediately at init()");
+        assert_eq!(imf_init_cfg.worker_mode, MODE_PUBLIC_BENCHMARK);
+        assert!(!imf_init_cfg.allow_synthetic);
+        assert_eq!(imf_init_cfg.min_source_count, 1);
+        assert_eq!(imf_init_cfg.secrets_ref, None);
+        assert_eq!(imf_init_cfg.max_source_spread_bps, 0);
+        assert_eq!(
+            imf_init_cfg.max_price_age_sec,
+            HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC
+        );
+
+        // Invalid fixture configurations rejected
+        let mut wrong_fixture_symbol = MarketConfig::gesha_demo_default(
+            "https://test.fastfs.io/roastake/worker.wasm".to_string(),
+            "abac707a27b4633857a9c2703a2cae67e18d5369e7d41daed946ad8945ffe2a6".to_string(),
+        );
+        wrong_fixture_symbol.symbol = "ARABICA-FAKE/USD".to_string();
+        assert!(wrong_fixture_symbol.validate().is_err());
+
+        let mut fixture_without_flag = MarketConfig::gesha_demo_default(
+            "https://test.fastfs.io/roastake/worker.wasm".to_string(),
+            "abac707a27b4633857a9c2703a2cae67e18d5369e7d41daed946ad8945ffe2a6".to_string(),
+        );
+        fixture_without_flag.allow_synthetic = false;
+        assert!(fixture_without_flag.validate().is_err());
+
+        let mut fixture_with_secret = MarketConfig::gesha_demo_default(
+            "https://test.fastfs.io/roastake/worker.wasm".to_string(),
+            "abac707a27b4633857a9c2703a2cae67e18d5369e7d41daed946ad8945ffe2a6".to_string(),
+        );
+        fixture_with_secret.secrets_ref = Some(MarketSecretsRef {
+            profile: "prod".to_string(),
+            account_id: "secrets.testnet".to_string(),
+        });
+        assert!(fixture_with_secret.validate().is_err());
+
+        // Invalid live configurations rejected
+        let mut live_allowing_synth = sample_live_market_config(TEST_LIVE_MARKET, None, 2, 500);
+        live_allowing_synth.allow_synthetic = true;
+        assert!(live_allowing_synth.validate().is_err());
+
+        let mut live_zero_sources = sample_live_market_config(TEST_LIVE_MARKET, None, 0, 500);
+        live_zero_sources.min_source_count = 0;
+        assert!(live_zero_sources.validate().is_err());
+
+        let mut live_zero_age = sample_live_market_config(TEST_LIVE_MARKET, None, 2, 500);
+        live_zero_age.max_price_age_sec = 0;
+        assert!(live_zero_age.validate().is_err());
+
+        let live_excessive_spread = sample_live_market_config(TEST_LIVE_MARKET, None, 2, 10_001);
+        assert!(live_excessive_spread.validate().is_err());
+
+        let mut unknown_mode = sample_live_market_config(TEST_LIVE_MARKET, None, 2, 500);
+        unknown_mode.worker_mode = "hybrid".to_string();
+        assert!(unknown_mode.validate().is_err());
+
+        // Mainnet / malformed secrets_ref rejected
+        let mainnet_secret_cfg = sample_live_market_config(
+            TEST_LIVE_MARKET,
+            Some(MarketSecretsRef {
+                profile: "prod".to_string(),
+                account_id: "roastake.near".to_string(),
+            }),
+            2,
+            500,
+        );
+        assert!(mainnet_secret_cfg.validate().is_err());
+
+        let whitespace_profile_cfg = sample_live_market_config(
+            TEST_LIVE_MARKET,
+            Some(MarketSecretsRef {
+                profile: "bad profile".to_string(),
+                account_id: "secrets.testnet".to_string(),
+            }),
+            2,
+            500,
+        );
+        assert!(whitespace_profile_cfg.validate().is_err());
+
+        // update_market_limits must also reject zero max_price_age_sec on live_index markets
+        let mut contract_mut = setup_contract();
+        let valid_live = sample_live_market_config(TEST_LIVE_MARKET, None, 2, 500);
+        contract_mut.add_market(valid_live);
+        let zero_age_update = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            contract_mut.update_market_limits(
+                TEST_LIVE_MARKET.to_string(),
+                near_sdk::json_types::U128(100_000_000),
+                near_sdk::json_types::U128(50_000_000_000),
+                0,
+                2000,
+            );
+        }));
+        assert!(zero_age_update.is_err());
+    }
+
+    #[test]
+    fn test_m042b_synthetic_protection_strict_guards() {
+        let mut contract = setup_contract();
+        let live_cfg = sample_live_market_config(TEST_LIVE_MARKET, None, 1, 500);
+        contract.add_market(live_cfg.clone());
+
+        let now_sec = 1_700_000_000u64;
+
+        // 1. Live market rejects SYNTHETIC_DEMO unconditionally (both observed_at=0 and observed_at=now)
+        for ts in [0u64, now_sec] {
+            let spoofed = WorkerOutput {
+                schema_version: SCHEMA_VERSION,
+                market: TEST_LIVE_MARKET.to_string(),
+                price: "727794219".to_string(),
+                decimals: DECIMALS_COFFEE_INDEX,
+                unit: UNIT_USD_PER_KG.to_string(),
+                source: DEFAULT_FIXTURE_SOURCE.to_string(),
+                source_count: 1,
+                observed_at: ts,
+                data_class: DATA_CLASS_SYNTHETIC.to_string(),
+            };
+            let bytes = serde_json::to_vec(&spoofed).unwrap();
+            let err = validate_worker_output(&bytes, TEST_LIVE_MARKET, &live_cfg, None, now_sec)
+                .unwrap_err();
+            assert!(
+                err.contains("ERR_SYNTHETIC_NOT_PERMITTED_FOR_MARKET"),
+                "unexpected error for live market synthetic rejection: {err}"
+            );
+        }
+
+        // 2. Synthetic rejected when allow_synthetic = false (even for GESHA-DEMO/USD fixture)
+        let mut disabled_synth_cfg = contract
+            .get_market_config(MARKET_GESHA_DEMO.to_string())
+            .unwrap();
+        disabled_synth_cfg.allow_synthetic = false;
+        let gesha_bytes = serde_json::to_vec(&WorkerOutput::fixture_gesha_demo()).unwrap();
+        let err_disabled = validate_worker_output(
+            &gesha_bytes,
+            MARKET_GESHA_DEMO,
+            &disabled_synth_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err();
+        assert!(err_disabled.contains("ERR_SYNTHETIC_DISABLED"));
+
+        // 3. Synthetic rejected for incorrect market configuration (live_index mode with allow_synthetic=true or secrets)
+        let mut live_mode_on_gesha = contract
+            .get_market_config(MARKET_GESHA_DEMO.to_string())
+            .unwrap();
+        live_mode_on_gesha.worker_mode = MODE_LIVE_INDEX.to_string();
+        let err_live_mode = validate_worker_output(
+            &gesha_bytes,
+            MARKET_GESHA_DEMO,
+            &live_mode_on_gesha,
+            None,
+            now_sec,
+        )
+        .unwrap_err();
+        assert!(err_live_mode.contains("ERR_SYNTHETIC_IN_LIVE_MODE"));
+
+        let mut multi_source_fixture_cfg = contract
+            .get_market_config(MARKET_GESHA_DEMO.to_string())
+            .unwrap();
+        multi_source_fixture_cfg.min_source_count = 2;
+        let err_bad_cfg = validate_worker_output(
+            &gesha_bytes,
+            MARKET_GESHA_DEMO,
+            &multi_source_fixture_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err();
+        assert!(err_bad_cfg.contains("ERR_INVALID_SYNTHETIC_CONFIG"));
+
+        // 4. Zero timestamp rejected on LIVE_VERIFIED and LIVE_AGGREGATED
+        let zero_ts_verified = WorkerOutput {
+            schema_version: SCHEMA_VERSION,
+            market: TEST_LIVE_MARKET.to_string(),
+            price: "727794219".to_string(),
+            decimals: DECIMALS_COFFEE_INDEX,
+            unit: UNIT_USD_PER_KG.to_string(),
+            source: "barchart:KC".to_string(),
+            source_count: 1,
+            observed_at: 0,
+            data_class: DATA_CLASS_LIVE_VERIFIED.to_string(),
+        };
+        let err_zero_verified = validate_worker_output(
+            &serde_json::to_vec(&zero_ts_verified).unwrap(),
+            TEST_LIVE_MARKET,
+            &live_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err();
+        assert!(err_zero_verified.contains("ERR_ZERO_TIMESTAMP_NOT_PERMITTED"));
+
+        let zero_ts_agg = WorkerOutput {
+            source: "barchart:KC+cepea:SP".to_string(),
+            source_count: 2,
+            data_class: DATA_CLASS_LIVE_AGGREGATED.to_string(),
+            ..zero_ts_verified
+        };
+        let err_zero_agg = validate_worker_output(
+            &serde_json::to_vec(&zero_ts_agg).unwrap(),
+            TEST_LIVE_MARKET,
+            &live_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err();
+        assert!(err_zero_agg.contains("ERR_ZERO_TIMESTAMP_NOT_PERMITTED"));
+
+        // 5. Incorrect fixture source or source_count rejected on GESHA-DEMO/USD
+        let gesha_cfg = contract
+            .get_market_config(MARKET_GESHA_DEMO.to_string())
+            .unwrap();
+        let mut wrong_source_fixture = WorkerOutput::fixture_gesha_demo();
+        wrong_source_fixture.source = "ico-composite".to_string();
+        let err_src = validate_worker_output(
+            &serde_json::to_vec(&wrong_source_fixture).unwrap(),
+            MARKET_GESHA_DEMO,
+            &gesha_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err();
+        assert!(err_src.contains("ERR_INVALID_FIXTURE_SOURCE"));
+
+        let mut wrong_count_fixture = WorkerOutput::fixture_gesha_demo();
+        wrong_count_fixture.source_count = 2;
+        let err_cnt = validate_worker_output(
+            &serde_json::to_vec(&wrong_count_fixture).unwrap(),
+            MARKET_GESHA_DEMO,
+            &gesha_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err();
+        assert!(err_cnt.contains("ERR_INVALID_FIXTURE_SOURCE_COUNT"));
+
+        // 6. Full callback still rejects synthetic on live market without overwriting price
+        let mut req_ctx = VMContextBuilder::new();
+        req_ctx
+            .current_account_id(oracle_contract())
+            .predecessor_account_id(alice())
+            .attached_deposit(NearToken::from_millinear(50))
+            .account_balance(NearToken::from_near(100))
+            .block_timestamp(now_sec * 1_000_000_000);
+        testing_env!(req_ctx.build());
+        let _ = contract.request_price_update(TEST_LIVE_MARKET.to_string());
+
+        let spoof_payload = serde_json::to_vec(&WorkerOutput {
+            market: TEST_LIVE_MARKET.to_string(),
+            ..WorkerOutput::fixture_gesha_demo()
+        })
+        .unwrap();
+        let mut cb_ctx = VMContextBuilder::new();
+        cb_ctx
+            .current_account_id(oracle_contract())
+            .predecessor_account_id(oracle_contract())
+            .account_balance(NearToken::from_near(100))
+            .block_timestamp(now_sec * 1_000_000_000);
+        set_test_env_with_promises(
+            cb_ctx.build(),
+            vec![PromiseResult::Successful(spoof_payload)],
+        );
+        assert!(
+            contract
+                .on_outlayer_execution(1, TEST_LIVE_MARKET.to_string())
+                .is_none(),
+            "live market callback must reject SYNTHETIC_DEMO"
+        );
+        assert!(contract.get_pending_request(1).is_none());
+        assert!(contract.get_price(TEST_LIVE_MARKET.to_string()).is_none());
+    }
+
+    #[test]
+    fn test_m042b_live_output_validation_and_quorum() {
+        let mut contract = setup_contract();
+        let live_cfg_min1 = sample_live_market_config(TEST_LIVE_MARKET, None, 1, 500);
+        contract.add_market(live_cfg_min1.clone());
+
+        let now_sec = 1_700_000_000u64;
+
+        // 1. LIVE_VERIFIED with sufficient source_count (1 >= 1) succeeds via callback
+        let mut ctx = VMContextBuilder::new();
+        ctx.current_account_id(oracle_contract())
+            .predecessor_account_id(alice())
+            .attached_deposit(NearToken::from_millinear(50))
+            .account_balance(NearToken::from_near(100))
+            .block_timestamp(now_sec * 1_000_000_000);
+        testing_env!(ctx.build());
+        let _ = contract.request_price_update(TEST_LIVE_MARKET.to_string());
+
+        let live_verified = WorkerOutput {
+            schema_version: SCHEMA_VERSION,
+            market: TEST_LIVE_MARKET.to_string(),
+            price: "727794219".to_string(),
+            decimals: DECIMALS_COFFEE_INDEX,
+            unit: UNIT_USD_PER_KG.to_string(),
+            source: "barchart:KC".to_string(),
+            source_count: 1,
+            observed_at: now_sec - 15,
+            data_class: DATA_CLASS_LIVE_VERIFIED.to_string(),
+        };
+        let mut cb_ctx = VMContextBuilder::new();
+        cb_ctx
+            .current_account_id(oracle_contract())
+            .predecessor_account_id(oracle_contract())
+            .account_balance(NearToken::from_near(100))
+            .block_timestamp(now_sec * 1_000_000_000);
+        set_test_env_with_promises(
+            cb_ctx.build(),
+            vec![PromiseResult::Successful(
+                serde_json::to_vec(&live_verified).unwrap(),
+            )],
+        );
+        let obs1 = contract
+            .on_outlayer_execution(1, TEST_LIVE_MARKET.to_string())
+            .expect("LIVE_VERIFIED must be stored");
+        assert_eq!(obs1.price.0, 727_794_219);
+        assert_eq!(obs1.source_count, 1);
+        assert_eq!(obs1.data_class, DATA_CLASS_LIVE_VERIFIED);
+
+        // 2. LIVE_AGGREGATED with only 1 source must be REJECTED even when min_source_count == 1
+        let bad_agg_single = WorkerOutput {
+            source_count: 1,
+            data_class: DATA_CLASS_LIVE_AGGREGATED.to_string(),
+            observed_at: now_sec,
+            ..live_verified.clone()
+        };
+        let err_agg_single = validate_worker_output(
+            &serde_json::to_vec(&bad_agg_single).unwrap(),
+            TEST_LIVE_MARKET,
+            &live_cfg_min1,
+            Some(&obs1),
+            now_sec,
+        )
+        .unwrap_err();
+        assert!(err_agg_single.contains("ERR_AGGREGATED_REQUIRES_MULTIPLE_SOURCES"));
+
+        // 3. Upgrade market policy to min_source_count = 2 -> LIVE_VERIFIED(1) rejected, LIVE_AGGREGATED(2) accepted
+        testing_env!(ctx.build());
+        let live_cfg_min2 = sample_live_market_config(TEST_LIVE_MARKET, None, 2, 300);
+        contract.add_market(live_cfg_min2.clone());
+
+        let err_under_quorum = validate_worker_output(
+            &serde_json::to_vec(&live_verified).unwrap(),
+            TEST_LIVE_MARKET,
+            &live_cfg_min2,
+            Some(&obs1),
+            now_sec,
+        )
+        .unwrap_err();
+        assert!(err_under_quorum.contains("ERR_INSUFFICIENT_SOURCE_COUNT"));
+
+        testing_env!(ctx.build());
+        let _ = contract.request_price_update(TEST_LIVE_MARKET.to_string());
+        let live_agg = WorkerOutput {
+            schema_version: SCHEMA_VERSION,
+            market: TEST_LIVE_MARKET.to_string(),
+            price: "730000000".to_string(),
+            decimals: DECIMALS_COFFEE_INDEX,
+            unit: UNIT_USD_PER_KG.to_string(),
+            source: "barchart:KC+cepea:SP".to_string(),
+            source_count: 2,
+            observed_at: now_sec,
+            data_class: DATA_CLASS_LIVE_AGGREGATED.to_string(),
+        };
+        set_test_env_with_promises(
+            cb_ctx.build(),
+            vec![PromiseResult::Successful(
+                serde_json::to_vec(&live_agg).unwrap(),
+            )],
+        );
+        let obs2 = contract
+            .on_outlayer_execution(2, TEST_LIVE_MARKET.to_string())
+            .expect("LIVE_AGGREGATED with 2 sources must be stored");
+        assert_eq!(obs2.price.0, 730_000_000);
+        assert_eq!(obs2.source_count, 2);
+        assert_eq!(obs2.data_class, DATA_CLASS_LIVE_AGGREGATED);
+
+        // 4. Unknown / unsupported data_class fails closed
+        for bad_class in ["OFFICIAL", "RAW_API", "SYNTHETIC_V2", ""] {
+            let unknown_cls = WorkerOutput {
+                data_class: bad_class.to_string(),
+                ..live_agg.clone()
+            };
+            let err = validate_worker_output(
+                &serde_json::to_vec(&unknown_cls).unwrap(),
+                TEST_LIVE_MARKET,
+                &live_cfg_min2,
+                Some(&obs2),
+                now_sec,
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("ERR_UNSUPPORTED_DATA_CLASS"),
+                "expected ERR_UNSUPPORTED_DATA_CLASS for '{bad_class}', got {err}"
+            );
+        }
+
+        // 5. Fixture market rejects LIVE_VERIFIED / LIVE_AGGREGATED (never mix live classes into fixture slot)
+        let gesha_cfg = contract
+            .get_market_config(MARKET_GESHA_DEMO.to_string())
+            .unwrap();
+        let err_live_on_gesha = validate_worker_output(
+            &serde_json::to_vec(&WorkerOutput {
+                market: MARKET_GESHA_DEMO.to_string(),
+                ..live_verified
+            })
+            .unwrap(),
+            MARKET_GESHA_DEMO,
+            &gesha_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err();
+        assert!(err_live_on_gesha.contains("ERR_LIVE_OUTPUT_IN_FIXTURE_MODE"));
+    }
+
+    #[test]
+    fn test_m042b_worker_input_routing_and_secrets_abi_forwarding() {
+        let mut contract = setup_contract();
+
+        // Register a live market configured with a secret reference and custom thresholds
+        let secret_profile = "arabica-prod-keys";
+        let secret_account = "roastake-secrets.testnet";
+        let mut live_cfg = sample_live_market_config(
+            TEST_LIVE_MARKET,
+            Some(MarketSecretsRef {
+                profile: secret_profile.to_string(),
+                account_id: secret_account.to_string(),
+            }),
+            2,
+            350,
+        );
+        live_cfg.max_price_age_sec = 7_200;
+        contract.add_market(live_cfg.clone());
+
+        // 1. Direct WorkerInput policy builder verification
+        let gesha_cfg = contract
+            .get_market_config(MARKET_GESHA_DEMO.to_string())
+            .unwrap();
+        let gesha_input = gesha_cfg.build_worker_input().unwrap();
+        assert_eq!(gesha_input, WorkerInput::new_fixture(MARKET_GESHA_DEMO));
+        let gesha_json = serde_json::to_string(&gesha_input).unwrap();
+        assert_eq!(
+            gesha_json,
+            r#"{"schema_version":1,"market":"GESHA-DEMO/USD","mode":"fixture"}"#
+        );
+
+        let live_input = live_cfg.build_worker_input().unwrap();
+        assert_eq!(live_input.mode, MODE_LIVE_INDEX);
+        assert_eq!(live_input.min_source_count, Some(2));
+        assert_eq!(live_input.max_upstream_age_sec, Some(7_200));
+        assert_eq!(live_input.max_source_spread_bps, Some(350));
+
+        // Corrupted live config never silently falls back to fixture
+        let mut corrupted_live = live_cfg;
+        corrupted_live.allow_synthetic = true;
+        assert!(corrupted_live.build_worker_input().is_err());
+
+        // 2. Request on GESHA-DEMO/USD forwards fixture input and secrets_ref = null
+        let mut ctx = VMContextBuilder::new();
+        ctx.current_account_id(oracle_contract())
+            .predecessor_account_id(alice())
+            .attached_deposit(NearToken::from_millinear(50))
+            .account_balance(NearToken::from_near(100))
+            .block_timestamp(1_700_000_000_000_000_000);
+        testing_env!(ctx.build());
+        let _ = contract.request_price_update(MARKET_GESHA_DEMO.to_string());
+
+        let gesha_abi = extract_outlayer_request_execution_args();
+        let gesha_obj = gesha_abi.as_object().unwrap();
+        assert_eq!(gesha_obj.len(), 7, "canonical 7-argument OutLayer ABI");
+        assert_eq!(gesha_abi["secrets_ref"], serde_json::Value::Null);
+        assert_eq!(gesha_abi["response_format"], "Json");
+        assert_eq!(gesha_abi["payer_account_id"], "alice.testnet");
+        assert_eq!(gesha_abi["params"], serde_json::Value::Null);
+        let parsed_gesha_in: WorkerInput =
+            serde_json::from_str(gesha_abi["input_data"].as_str().unwrap()).unwrap();
+        assert_eq!(parsed_gesha_in, WorkerInput::new_fixture(MARKET_GESHA_DEMO));
+
+        // 3. Request on live market forwards exact live WorkerInput and exact secrets_ref to OutLayer ABI
+        testing_env!(ctx.build());
+        let _ = contract.request_price_update(TEST_LIVE_MARKET.to_string());
+
+        let live_abi = extract_outlayer_request_execution_args();
+        let live_obj = live_abi.as_object().unwrap();
+        assert_eq!(live_obj.len(), 7, "canonical 7-argument OutLayer ABI");
+        assert!(live_obj.contains_key("source"));
+        assert!(live_obj.contains_key("resource_limits"));
+        assert!(live_obj.contains_key("input_data"));
+        assert!(live_obj.contains_key("secrets_ref"));
+        assert!(live_obj.contains_key("response_format"));
+        assert!(live_obj.contains_key("payer_account_id"));
+        assert!(live_obj.contains_key("params"));
+
+        let forwarded_sr: SecretsReference =
+            serde_json::from_value(live_abi["secrets_ref"].clone())
+                .expect("non-null SecretsReference");
+        assert_eq!(forwarded_sr.profile, secret_profile);
+        assert_eq!(forwarded_sr.account_id, secret_account);
+
+        let raw_input_str = live_abi["input_data"].as_str().unwrap();
+        assert!(
+            !raw_input_str.contains(secret_profile)
+                && !raw_input_str.contains(secret_account)
+                && !raw_input_str.contains("secrets"),
+            "WorkerInput must never contain secrets references or credentials"
+        );
+        let parsed_live_in: WorkerInput = serde_json::from_str(raw_input_str).unwrap();
+        assert_eq!(parsed_live_in.mode, MODE_LIVE_INDEX);
+        assert_eq!(parsed_live_in.market, TEST_LIVE_MARKET);
+        assert_eq!(parsed_live_in.min_source_count, Some(2));
+        assert_eq!(parsed_live_in.max_upstream_age_sec, Some(7_200));
+        assert_eq!(parsed_live_in.max_source_spread_bps, Some(350));
+
+        // Logs emitted during request dispatch must not expose secret references or keys
+        for log in get_logs() {
+            assert!(!log.contains(secret_profile));
+            assert!(!log.contains(secret_account));
+        }
+    }
+
+    #[test]
+    fn test_m042b_borsh_schema_roundtrip_and_legacy_incompatibility() {
+        // Legacy M03C.3.7.6 MarketConfig layout before adding M04.2b policy fields
+        #[near_sdk::near(serializers = [borsh])]
+        struct LegacyM03376MarketConfig {
+            symbol: String,
+            description: String,
+            decimals: u8,
+            unit: String,
+            min_price: near_sdk::json_types::U128,
+            max_price: near_sdk::json_types::U128,
+            max_price_age_sec: u64,
+            max_divergence_bps: u32,
+            wasm_url: String,
+            wasm_sha256: String,
+            build_target: String,
+            active: bool,
+        }
+
+        let legacy_cfg = LegacyM03376MarketConfig {
+            symbol: MARKET_GESHA_DEMO.to_string(),
+            description: "Legacy Gate 3 GESHA-DEMO".to_string(),
+            decimals: DECIMALS_COFFEE_INDEX,
+            unit: UNIT_USD_PER_KG.to_string(),
+            min_price: near_sdk::json_types::U128(100_000_000),
+            max_price: near_sdk::json_types::U128(50_000_000_000),
+            max_price_age_sec: 3600,
+            max_divergence_bps: 2000,
+            wasm_url: "https://test.fastfs.io/roastake/worker.wasm".to_string(),
+            wasm_sha256: "abac707a27b4633857a9c2703a2cae67e18d5369e7d41daed946ad8945ffe2a6"
+                .to_string(),
+            build_target: "wasm32-wasip2".to_string(),
+            active: true,
+        };
+        let legacy_bytes = near_sdk::borsh::to_vec(&legacy_cfg).unwrap();
+        let decode_legacy = near_sdk::borsh::from_slice::<MarketConfig>(&legacy_bytes);
+        assert!(
+            decode_legacy.is_err(),
+            "M03C.3.7.6 MarketConfig Borsh bytes must fail deserialization under M04.2b layout"
+        );
+
+        // Current M04.2b MarketConfig round-trips cleanly in both Borsh and JSON (None and Some secrets_ref)
+        let cfg_fixture = MarketConfig::gesha_demo_default(
+            "https://test.fastfs.io/roastake/worker.wasm".to_string(),
+            "abac707a27b4633857a9c2703a2cae67e18d5369e7d41daed946ad8945ffe2a6".to_string(),
+        );
+        let borsh_fixture = near_sdk::borsh::to_vec(&cfg_fixture).unwrap();
+        assert_eq!(
+            near_sdk::borsh::from_slice::<MarketConfig>(&borsh_fixture).unwrap(),
+            cfg_fixture
+        );
+
+        let cfg_live = sample_live_market_config(
+            TEST_LIVE_MARKET,
+            Some(MarketSecretsRef {
+                profile: "prod".to_string(),
+                account_id: "roastake-secrets.testnet".to_string(),
+            }),
+            2,
+            400,
+        );
+        let borsh_live = near_sdk::borsh::to_vec(&cfg_live).unwrap();
+        assert_eq!(
+            near_sdk::borsh::from_slice::<MarketConfig>(&borsh_live).unwrap(),
+            cfg_live
+        );
+        let json_live = serde_json::to_string(&cfg_live).unwrap();
+        assert_eq!(
+            serde_json::from_str::<MarketConfig>(&json_live).unwrap(),
+            cfg_live
+        );
+    }
+
+    #[test]
+    fn test_m042c_secrets_ref_profile_matches_outlayer_rules() {
+        let valid_profiles = [
+            "prod123",
+            "arabica_prod-01",
+            &"a".repeat(64), // exact 64-byte maximum
+        ];
+        for p in valid_profiles {
+            let sr = MarketSecretsRef {
+                profile: p.to_string(),
+                account_id: "roastake-secrets.testnet".to_string(),
+            };
+            assert!(sr.validate().is_ok(), "profile '{p}' should be accepted");
+            let cfg = sample_live_market_config(TEST_LIVE_MARKET, Some(sr), 1, 500);
+            assert!(cfg.validate().is_ok());
+        }
+
+        let invalid_profiles = [
+            "",              // empty
+            &"a".repeat(65), // 65 characters (> 64 bytes)
+            "v1.0",          // period rejected
+            "prod:us",       // colon rejected
+            "bad profile",   // space rejected
+            "café_prod",     // Unicode letter rejected
+        ];
+        for p in invalid_profiles {
+            let sr = MarketSecretsRef {
+                profile: p.to_string(),
+                account_id: "roastake-secrets.testnet".to_string(),
+            };
+            assert!(sr.validate().is_err(), "profile '{p}' must be rejected");
+            let cfg = sample_live_market_config(TEST_LIVE_MARKET, Some(sr), 1, 500);
+            assert!(cfg.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn test_m042d1_imf_public_benchmark_policy_and_freshness_isolation() {
+        let mut contract = setup_contract();
+
+        // ARABICA-MONTHLY-IMF/USD must be immediately accessible after init() without calling add_market()
+        let imf_cfg = contract
+            .get_market_config(MARKET_ARABICA_MONTHLY_IMF.to_string())
+            .expect("ARABICA-MONTHLY-IMF/USD must be populated directly by init()");
+        assert_eq!(imf_cfg.symbol, MARKET_ARABICA_MONTHLY_IMF);
+        assert_eq!(imf_cfg.worker_mode, MODE_PUBLIC_BENCHMARK);
+        assert_eq!(
+            imf_cfg.max_price_age_sec,
+            HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC
+        );
+        assert_eq!(imf_cfg.min_source_count, 1);
+        assert!(!imf_cfg.allow_synthetic);
+        assert_eq!(imf_cfg.secrets_ref, None);
+        assert_eq!(imf_cfg.max_source_spread_bps, 0);
+        assert!(imf_cfg
+            .description
+            .contains("International Monetary Fund (IMF)"));
+        assert!(imf_cfg.description.contains("PCOFFOTM"));
+        assert!(imf_cfg
+            .description
+            .contains("not live ICE Coffee C futures"));
+        assert!(imf_cfg
+            .description
+            .contains("does not imply IMF endorsement"));
+        assert!(imf_cfg.validate().is_ok());
+
+        // Preserves MarketSecretsRef validation/forwarding without requiring secrets for IMF
+        let mut imf_with_secret = imf_cfg.clone();
+        imf_with_secret.secrets_ref = Some(MarketSecretsRef {
+            profile: "optional-profile".to_string(),
+            account_id: "roastake-secrets.testnet".to_string(),
+        });
+        assert!(imf_with_secret.validate().is_ok());
+
+        // Freshness rules on other markets must NOT be relaxed to 90 days
+        let mut live_cfg = sample_live_market_config(TEST_LIVE_MARKET, None, 1, 500);
+        contract.add_market(live_cfg.clone());
+        live_cfg.max_price_age_sec = HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC;
+        assert!(live_cfg.validate().is_err());
+
+        let mut gesha_cfg = contract
+            .get_market_config(MARKET_GESHA_DEMO.to_string())
+            .unwrap();
+        gesha_cfg.max_price_age_sec = HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC;
+        assert!(gesha_cfg.validate().is_err());
+
+        // Verify request dispatch directly against init()-seeded ARABICA-MONTHLY-IMF/USD (secrets_ref = null)
+        let imf_input = imf_cfg.build_worker_input().unwrap();
+        assert_eq!(imf_input.mode, MODE_PUBLIC_BENCHMARK);
+        assert_eq!(
+            imf_input.max_upstream_age_sec,
+            Some(HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC)
+        );
+
+        let now_sec = 1_794_340_800u64; // 2026-11-10T20:00:00Z
+        let obs_2026_09_end = 1_790_812_799u64; // 2026-09-30T23:59:59Z (~40.8 days old <= 90 days)
+
+        let mut ctx = VMContextBuilder::new();
+        ctx.current_account_id(oracle_contract())
+            .predecessor_account_id(alice())
+            .attached_deposit(NearToken::from_millinear(50))
+            .account_balance(NearToken::from_near(100))
+            .block_timestamp(now_sec * 1_000_000_000);
+        testing_env!(ctx.build());
+        let _ = contract.request_price_update(MARKET_ARABICA_MONTHLY_IMF.to_string());
+
+        let abi = extract_outlayer_request_execution_args();
+        assert_eq!(abi["secrets_ref"], serde_json::Value::Null);
+        let forwarded_in: WorkerInput =
+            serde_json::from_str(abi["input_data"].as_str().unwrap()).unwrap();
+        assert_eq!(forwarded_in, imf_input);
+
+        let valid_imf_out = WorkerOutput {
+            schema_version: SCHEMA_VERSION,
+            market: MARKET_ARABICA_MONTHLY_IMF.to_string(),
+            price: "727794219".to_string(),
+            decimals: DECIMALS_COFFEE_INDEX,
+            unit: UNIT_USD_PER_KG.to_string(),
+            source: DEFAULT_IMF_PCPS_SOURCE.to_string(),
+            source_count: 1,
+            observed_at: obs_2026_09_end,
+            data_class: DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY.to_string(),
+        };
+        let mut cb_ctx = VMContextBuilder::new();
+        cb_ctx
+            .current_account_id(oracle_contract())
+            .predecessor_account_id(oracle_contract())
+            .account_balance(NearToken::from_near(100))
+            .block_timestamp(now_sec * 1_000_000_000);
+        set_test_env_with_promises(
+            cb_ctx.build(),
+            vec![PromiseResult::Successful(
+                serde_json::to_vec(&valid_imf_out).unwrap(),
+            )],
+        );
+        let stored = contract
+            .on_outlayer_execution(1, MARKET_ARABICA_MONTHLY_IMF.to_string())
+            .expect("valid IMF monthly benchmark accepted within 90d limit");
+        assert_eq!(stored.price.0, 727_794_219);
+        assert_eq!(stored.source, DEFAULT_IMF_PCPS_SOURCE);
+        assert_eq!(stored.source_count, 1);
+        assert_eq!(stored.observed_at_sec, obs_2026_09_end);
+        assert_eq!(stored.data_class, DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY);
+
+        // Equal monthly timestamp on subsequent re-poll succeeds monotonically; older fails
+        assert!(validate_worker_output(
+            &serde_json::to_vec(&valid_imf_out).unwrap(),
+            MARKET_ARABICA_MONTHLY_IMF,
+            &imf_cfg,
+            Some(&stored),
+            now_sec,
+        )
+        .is_ok());
+
+        let older_out = WorkerOutput {
+            observed_at: obs_2026_09_end - 1,
+            ..valid_imf_out.clone()
+        };
+        assert!(validate_worker_output(
+            &serde_json::to_vec(&older_out).unwrap(),
+            MARKET_ARABICA_MONTHLY_IMF,
+            &imf_cfg,
+            Some(&stored),
+            now_sec,
+        )
+        .unwrap_err()
+        .contains("ERR_NON_MONOTONIC_TIMESTAMP"));
+
+        // Observation older than 90 days fails with ERR_STALE_TIMESTAMP
+        let stale_imf = WorkerOutput {
+            observed_at: now_sec - (HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC + 1),
+            ..valid_imf_out.clone()
+        };
+        assert!(validate_worker_output(
+            &serde_json::to_vec(&stale_imf).unwrap(),
+            MARKET_ARABICA_MONTHLY_IMF,
+            &imf_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err()
+        .contains("ERR_STALE_TIMESTAMP"));
+
+        // Reject wrong source, wrong source_count, observed_at=0, SYNTHETIC_DEMO, LIVE_VERIFIED, LIVE_AGGREGATED
+        let bad_source = WorkerOutput {
+            source: "fred-pcoffotmusdm".to_string(),
+            ..valid_imf_out.clone()
+        };
+        assert!(validate_worker_output(
+            &serde_json::to_vec(&bad_source).unwrap(),
+            MARKET_ARABICA_MONTHLY_IMF,
+            &imf_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err()
+        .contains("ERR_INVALID_PUBLIC_BENCHMARK_SOURCE"));
+
+        let bad_count = WorkerOutput {
+            source_count: 2,
+            ..valid_imf_out.clone()
+        };
+        assert!(validate_worker_output(
+            &serde_json::to_vec(&bad_count).unwrap(),
+            MARKET_ARABICA_MONTHLY_IMF,
+            &imf_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err()
+        .contains("ERR_INVALID_PUBLIC_BENCHMARK_SOURCE_COUNT"));
+
+        let zero_ts = WorkerOutput {
+            observed_at: 0,
+            ..valid_imf_out.clone()
+        };
+        assert!(validate_worker_output(
+            &serde_json::to_vec(&zero_ts).unwrap(),
+            MARKET_ARABICA_MONTHLY_IMF,
+            &imf_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err()
+        .contains("ERR_ZERO_TIMESTAMP_NOT_PERMITTED"));
+
+        for wrong_cls in [
+            DATA_CLASS_SYNTHETIC,
+            DATA_CLASS_LIVE_VERIFIED,
+            DATA_CLASS_LIVE_AGGREGATED,
+            "OFFICIAL_LIVE",
+        ] {
+            let spoofed = WorkerOutput {
+                data_class: wrong_cls.to_string(),
+                ..valid_imf_out.clone()
+            };
+            assert!(
+                validate_worker_output(
+                    &serde_json::to_vec(&spoofed).unwrap(),
+                    MARKET_ARABICA_MONTHLY_IMF,
+                    &imf_cfg,
+                    None,
+                    now_sec,
+                )
+                .is_err(),
+                "class '{wrong_cls}' must be rejected on IMF benchmark market"
+            );
+        }
+
+        // Reject PUBLIC_BENCHMARK_MONTHLY on any other market (GESHA-DEMO/USD and ARABICA-REF/USD)
+        let real_live_cfg = sample_live_market_config(TEST_LIVE_MARKET, None, 1, 500);
+        let benchmark_on_live = WorkerOutput {
+            market: TEST_LIVE_MARKET.to_string(),
+            ..valid_imf_out.clone()
+        };
+        assert!(validate_worker_output(
+            &serde_json::to_vec(&benchmark_on_live).unwrap(),
+            TEST_LIVE_MARKET,
+            &real_live_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err()
+        .contains("ERR_PUBLIC_BENCHMARK_NOT_PERMITTED_FOR_MARKET"));
+
+        let gesha_ok_cfg = contract
+            .get_market_config(MARKET_GESHA_DEMO.to_string())
+            .unwrap();
+        let benchmark_on_gesha = WorkerOutput {
+            market: MARKET_GESHA_DEMO.to_string(),
+            ..valid_imf_out
+        };
+        assert!(validate_worker_output(
+            &serde_json::to_vec(&benchmark_on_gesha).unwrap(),
+            MARKET_GESHA_DEMO,
+            &gesha_ok_cfg,
+            None,
+            now_sec,
+        )
+        .unwrap_err()
+        .contains("ERR_PUBLIC_BENCHMARK_NOT_PERMITTED_FOR_MARKET"));
+    }
+
+    #[test]
+    fn test_m042d2a_init_sha256_validation_and_dual_default_markets() {
+        let valid_url =
+            "https://test.fastfs.io/roastake/workers/roastake_coffee_price_index.wasm".to_string();
+        let valid_hash =
+            "855bc554762aa9b367ac2b3c62a219c250410f3715256e822f8c24e23df100f1".to_string();
+
+        // 1. Valid explicit SHA-256 initializes BOTH GESHA-DEMO/USD and ARABICA-MONTHLY-IMF/USD immediately
+        let mut init_ctx = VMContextBuilder::new();
+        init_ctx
+            .current_account_id(oracle_contract())
+            .predecessor_account_id(alice())
+            .signer_account_id(alice())
+            .account_balance(NearToken::from_near(100))
+            .block_timestamp(1_794_340_800_000_000_000);
+        testing_env!(init_ctx.build());
+
+        let mut contract = RoastakeOracleAdapter::init(
+            alice(),
+            Some(outlayer_contract()),
+            Some(valid_url.clone()),
+            Some(valid_hash.clone()),
+            TEST_MIN_OPERATING_RESERVE,
+            None,
+        );
+
+        let snap = contract.get_accounting_snapshot();
+        assert_eq!(snap.market_count, 2);
+        assert_eq!(
+            contract.list_markets(),
+            vec![
+                MARKET_GESHA_DEMO.to_string(),
+                MARKET_ARABICA_MONTHLY_IMF.to_string()
+            ]
+        );
+        let gesha = contract
+            .get_market_config(MARKET_GESHA_DEMO.to_string())
+            .expect("GESHA-DEMO/USD must exist immediately after init");
+        assert_eq!(gesha.wasm_url, valid_url);
+        assert_eq!(gesha.wasm_sha256, valid_hash);
+        assert_eq!(gesha.worker_mode, MODE_FIXTURE);
+        assert!(gesha.allow_synthetic);
+
+        let imf = contract
+            .get_market_config(MARKET_ARABICA_MONTHLY_IMF.to_string())
+            .expect("ARABICA-MONTHLY-IMF/USD must exist immediately after init");
+        assert_eq!(imf.wasm_url, valid_url);
+        assert_eq!(imf.wasm_sha256, valid_hash);
+        assert_eq!(imf.worker_mode, MODE_PUBLIC_BENCHMARK);
+        assert!(!imf.allow_synthetic);
+        assert_eq!(imf.max_price_age_sec, HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC);
+        assert_eq!(imf.secrets_ref, None);
+
+        // Additional markets remain registerable via add_market
+        let custom_live = sample_live_market_config(TEST_LIVE_MARKET, None, 1, 500);
+        contract.add_market(custom_live);
+        assert_eq!(contract.get_accounting_snapshot().market_count, 3);
+
+        // 2. Reject missing hash (no silent placeholder fallback)
+        testing_env!(init_ctx.build());
+        let missing_res = std::panic::catch_unwind(|| {
+            let _ = RoastakeOracleAdapter::init(
+                alice(),
+                Some(outlayer_contract()),
+                Some(valid_url.clone()),
+                None,
+                TEST_MIN_OPERATING_RESERVE,
+                None,
+            );
+        });
+        assert!(
+            missing_res.is_err(),
+            "missing initial_wasm_sha256 must fail closed"
+        );
+
+        // 3. Reject incorrect lengths, non-hex characters, and all-zero placeholder
+        for bad_hash in [
+            "".to_string(),
+            "a".repeat(63),
+            "a".repeat(65),
+            format!("{}g", "a".repeat(63)),
+            format!("{}-", "a".repeat(63)),
+            format!("{} ", "a".repeat(63)),
+            "0".repeat(64),
+        ] {
+            testing_env!(init_ctx.build());
+            let hash_clone = bad_hash.clone();
+            let url_clone = valid_url.clone();
+            let init_err = std::panic::catch_unwind(move || {
+                let _ = RoastakeOracleAdapter::init(
+                    alice(),
+                    Some(outlayer_contract()),
+                    Some(url_clone),
+                    Some(hash_clone),
+                    TEST_MIN_OPERATING_RESERVE,
+                    None,
+                );
+            });
+            assert!(
+                init_err.is_err(),
+                "init must reject invalid wasm_sha256 '{bad_hash}'"
+            );
+
+            // Also enforce rejection in update_market_wasm and MarketConfig::validate
+            let bad_cfg = sample_live_market_config(TEST_LIVE_MARKET, None, 1, 500);
+            let mut mutated = bad_cfg;
+            mutated.wasm_sha256 = bad_hash;
+            assert!(mutated.validate().is_err());
+        }
+
+        // Verify update_market_wasm also rejects all-zero placeholder
+        let mut admin_ctx = init_ctx;
+        testing_env!(admin_ctx.build());
+        let zero_update = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            contract.update_market_wasm(
+                MARKET_ARABICA_MONTHLY_IMF.to_string(),
+                valid_url.clone(),
+                "0".repeat(64),
+                "wasm32-wasip2".to_string(),
+            );
+        }));
+        assert!(
+            zero_update.is_err(),
+            "update_market_wasm must reject all-zero placeholder hash"
+        );
+        // Verify valid uppercase hex also parses cleanly if ever supplied by tooling
+        admin_ctx.block_timestamp(1_794_340_810_000_000_000);
+        testing_env!(admin_ctx.build());
+        assert!(crate::types::validate_wasm_sha256(&valid_hash.to_ascii_uppercase()).is_ok());
     }
 }

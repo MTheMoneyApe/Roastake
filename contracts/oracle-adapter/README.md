@@ -9,6 +9,7 @@ NEAR Rust contract responsible for requesting OutLayer execution and storing val
 - Track pending requests with unique nonces and market symbols.
 - Receive a private callback and handle promise success/failure safely.
 - Validate schema, timestamp, market, price bounds and replay protection.
+- Enforce market-isolated data classifications: `SYNTHETIC_DEMO` strictly on `GESHA-DEMO/USD`, `PUBLIC_BENCHMARK_MONTHLY` strictly on `ARABICA-MONTHLY-IMF/USD` (source `imf-pcps-pcoffotm`, `source_count = 1`, historical `90`-day staleness bound, attribution: *Source: International Monetary Fund (IMF), Primary Commodity Price System (PCPS), PCOFFOTM — ICO Other Mild Arabicas New York cash monthly average*; historical monthly data, not live ICE Coffee C futures, does not imply IMF endorsement), and `LIVE_VERIFIED` / `LIVE_AGGREGATED` strictly on `live_index` markets (preserving strict live staleness limits and `MarketSecretsRef` support).
 - Store the latest valid fixed-point observation.
 
 ## Refund Solvency, Insurance Accounting, Claim Liveness & Storage Lifecycle (Missions 03C.3.6 – 03C.3.7.6)

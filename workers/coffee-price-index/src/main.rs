@@ -6,6 +6,15 @@
 
 mod engine;
 mod provider;
+mod transport;
+
+/// OutLayer manifest custom section compiled into the WASI binary and covered by its SHA-256.
+/// Pins only `{"capabilities":{"network":["api.imf.org"]}}` (no wildcards, no `connector_id`,
+/// no `author_secrets`), preserving fail-closed outbound blocking for every other host.
+#[used]
+#[link_section = "outlayer.manifest"]
+static OUTLAYER_MANIFEST: [u8; include_bytes!("../outlayer.manifest.json").len()] =
+    *include_bytes!("../outlayer.manifest.json");
 
 use std::io::{self, Read, Write};
 use std::process;

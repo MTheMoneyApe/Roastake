@@ -2,7 +2,23 @@
 
 use near_sdk::json_types::U128;
 use near_sdk::{near, AccountId, NearToken};
-use roastake_shared::DECIMALS_COFFEE_INDEX;
+use roastake_shared::{
+    validate_testnet_account_id, SecretsReference, WorkerInput, DECIMALS_COFFEE_INDEX,
+    DEFAULT_LIVE_INDEX_MAX_PRICE_AGE_SEC, DEFAULT_MAX_PRICE_AGE_SEC,
+    HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC, IMF_PCPS_ATTRIBUTION_NOTICE, MARKET_ARABICA_MONTHLY_IMF,
+    MARKET_GESHA_DEMO, MODE_FIXTURE, MODE_LIVE_INDEX, MODE_PUBLIC_BENCHMARK, UNIT_USD_PER_KG,
+};
+
+/// Validate a SHA-256 WASM digest: exact 64 ASCII hex chars and never all-zero placeholder.
+pub fn validate_wasm_sha256(hash: &str) -> Result<(), String> {
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("wasm_sha256 must be a valid 64-character hex string".to_string());
+    }
+    if hash.bytes().all(|b| b == b'0') {
+        return Err("wasm_sha256 cannot be an all-zero placeholder (0000...0000)".to_string());
+    }
+    Ok(())
+}
 
 /// Maximum UTF-8 byte length for a market symbol (e.g., "GESHA-DEMO/USD").
 pub const MAX_MARKET_SYMBOL_BYTES: usize = 64;
@@ -19,14 +35,78 @@ pub const MAX_WASM_URL_BYTES: usize = 256;
 /// Maximum UTF-8 byte length for an OutLayer WASI build target identifier (e.g., "wasm32-wasip2").
 pub const MAX_BUILD_TARGET_BYTES: usize = 32;
 
+/// Maximum UTF-8 byte length for `MarketConfig.worker_mode`.
+pub const MAX_WORKER_MODE_BYTES: usize = 32;
+
+/// Maximum UTF-8 byte length for `MarketSecretsRef.profile`.
+pub const MAX_SECRETS_PROFILE_BYTES: usize = 64;
+
+/// Maximum UTF-8 byte length for `MarketSecretsRef.account_id`.
+pub const MAX_SECRETS_ACCOUNT_ID_BYTES: usize = 64;
+
+/// Hard upper bound (100% = 10,000 bps) on `max_source_spread_bps`.
+pub const MAX_SOURCE_SPREAD_BPS: u32 = 10_000;
+
 /// Maximum UTF-8 byte length for `WorkerOutput.source` / `PriceObservation.source`.
 /// Bounded so a newly inserted `PriceObservation` in `IterableMap<String, PriceObservation>`
 /// (`keys` entry <= 114 bytes + `values` entry <= 379 bytes = <= 493 bytes worst-case) never
 /// exceeds `OPEN_REQUEST_STORAGE_BUDGET_BYTES` (512 bytes).
-pub const MAX_WORKER_SOURCE_BYTES: usize = 128;
+pub const MAX_WORKER_SOURCE_BYTES: usize = roastake_shared::MAX_WORKER_SOURCE_BYTES;
 
 /// Maximum UTF-8 byte length for `WorkerOutput.data_class` / `PriceObservation.data_class`.
-pub const MAX_WORKER_DATA_CLASS_BYTES: usize = 32;
+pub const MAX_WORKER_DATA_CLASS_BYTES: usize = roastake_shared::MAX_WORKER_DATA_CLASS_BYTES;
+
+/// Reference to encrypted OutLayer TEE credentials stored on-chain (contains no secret values).
+#[near(serializers = [borsh, json])]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketSecretsRef {
+    /// OutLayer secrets profile name (e.g., "prod")
+    pub profile: String,
+    /// Owner Testnet account holding the encrypted OutLayer secrets profile
+    pub account_id: String,
+}
+
+impl MarketSecretsRef {
+    /// Validate secrets reference bounds and strictly enforce Testnet + OutLayer profile rules (`[A-Za-z0-9_-]{1,64}`).
+    pub fn validate(&self) -> Result<(), String> {
+        if self.profile.is_empty() || self.profile.len() > MAX_SECRETS_PROFILE_BYTES {
+            return Err(format!(
+                "secrets_ref.profile must be 1..={} bytes of ASCII letters, digits, '-' or '_'",
+                MAX_SECRETS_PROFILE_BYTES
+            ));
+        }
+        if let Some(bad) = self
+            .profile
+            .chars()
+            .find(|c| !(c.is_ascii_alphanumeric() || *c == '-' || *c == '_'))
+        {
+            return Err(format!(
+                "secrets_ref.profile must contain only ASCII alphanumeric characters, '-' or '_' (invalid char {:?})",
+                bad
+            ));
+        }
+        if self.account_id.trim().is_empty() || self.account_id.len() > MAX_SECRETS_ACCOUNT_ID_BYTES
+        {
+            return Err(format!(
+                "secrets_ref.account_id must be 1..={} UTF-8 bytes",
+                MAX_SECRETS_ACCOUNT_ID_BYTES
+            ));
+        }
+        self.account_id
+            .parse::<AccountId>()
+            .map_err(|e| format!("secrets_ref.account_id is not a valid NEAR account ID: {e}"))?;
+        validate_testnet_account_id(&self.account_id)?;
+        Ok(())
+    }
+
+    /// Convert to OutLayer's `SecretsReference` ABI type for `request_execution`.
+    pub fn to_outlayer_secrets_ref(&self) -> SecretsReference {
+        SecretsReference {
+            profile: self.profile.clone(),
+            account_id: self.account_id.clone(),
+        }
+    }
+}
 
 /// Configuration for a supported coffee market index.
 #[near(serializers = [borsh, json])]
@@ -56,30 +136,94 @@ pub struct MarketConfig {
     pub build_target: String,
     /// Whether the market is currently active for updates
     pub active: bool,
+    /// Execution routing mode ("fixture" for GESHA demo, "live_index" for real markets)
+    pub worker_mode: String,
+    /// Optional OutLayer encrypted secrets profile reference (None for fixture markets)
+    pub secrets_ref: Option<MarketSecretsRef>,
+    /// Minimum participating sources required by on-chain validation and live Worker policy
+    pub min_source_count: u32,
+    /// Explicit permission for `SYNTHETIC_DEMO` data class (permitted ONLY on GESHA-DEMO/USD fixture)
+    pub allow_synthetic: bool,
+    /// Maximum participating-source dispersion policy forwarded to live Worker (in bps)
+    pub max_source_spread_bps: u32,
 }
 
 impl MarketConfig {
     /// Create the default configuration for GESHA-DEMO/USD.
     pub fn gesha_demo_default(wasm_url: String, wasm_sha256: String) -> Self {
         Self {
-            symbol: "GESHA-DEMO/USD".to_string(),
+            symbol: MARKET_GESHA_DEMO.to_string(),
             description: "Specialty Gesha Coffee Price Index (Testnet Demonstration Fixture)"
                 .to_string(),
             decimals: DECIMALS_COFFEE_INDEX,
-            unit: "USD/kg".to_string(),
+            unit: UNIT_USD_PER_KG.to_string(),
             // Min $1.00/kg (100,000,000), Max $500.00/kg (50,000,000,000)
             min_price: U128(100_000_000),
             max_price: U128(50_000_000_000),
-            max_price_age_sec: 3600,
+            max_price_age_sec: DEFAULT_MAX_PRICE_AGE_SEC,
             max_divergence_bps: 2000, // 20% max price swing
             wasm_url,
             wasm_sha256,
             build_target: "wasm32-wasip2".to_string(),
             active: true,
+            worker_mode: MODE_FIXTURE.to_string(),
+            secrets_ref: None,
+            min_source_count: 1,
+            allow_synthetic: true,
+            max_source_spread_bps: 0,
         }
     }
 
-    /// Validate the sanity of this market configuration.
+    /// Create the default Testnet configuration for `ARABICA-MONTHLY-IMF/USD`
+    /// (IMF PCPS `PCOFFOTM` historical monthly benchmark; 90-day staleness limit; no API secrets required).
+    pub fn arabica_monthly_imf_default(wasm_url: String, wasm_sha256: String) -> Self {
+        Self {
+            symbol: MARKET_ARABICA_MONTHLY_IMF.to_string(),
+            description: IMF_PCPS_ATTRIBUTION_NOTICE.to_string(),
+            decimals: DECIMALS_COFFEE_INDEX,
+            unit: UNIT_USD_PER_KG.to_string(),
+            // Min $1.00/kg (100,000,000), Max $500.00/kg (50,000,000,000)
+            min_price: U128(100_000_000),
+            max_price: U128(50_000_000_000),
+            max_price_age_sec: HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC,
+            max_divergence_bps: 2000,
+            wasm_url,
+            wasm_sha256,
+            build_target: "wasm32-wasip2".to_string(),
+            active: true,
+            worker_mode: MODE_PUBLIC_BENCHMARK.to_string(),
+            secrets_ref: None,
+            min_source_count: 1,
+            allow_synthetic: false,
+            max_source_spread_bps: 0,
+        }
+    }
+
+    /// Construct a typed `WorkerInput` from this market's configured policy.
+    ///
+    /// Fails closed on any policy inconsistency so live/benchmark markets can never fall back to `fixture`.
+    pub fn build_worker_input(&self) -> Result<WorkerInput, String> {
+        self.validate()?;
+        let input = match self.worker_mode.as_str() {
+            MODE_FIXTURE => WorkerInput::new_fixture(&self.symbol),
+            MODE_PUBLIC_BENCHMARK => {
+                WorkerInput::new_public_benchmark(&self.symbol, self.max_price_age_sec)
+            }
+            MODE_LIVE_INDEX => WorkerInput::new_live_index(
+                &self.symbol,
+                self.min_source_count,
+                self.max_price_age_sec,
+                self.max_source_spread_bps,
+            ),
+            other => {
+                return Err(format!("unsupported worker_mode '{}'", other));
+            }
+        };
+        input.validate()?;
+        Ok(input)
+    }
+
+    /// Validate the sanity and security invariants of this market configuration.
     pub fn validate(&self) -> Result<(), String> {
         if self.symbol.trim().is_empty() {
             return Err("market symbol cannot be empty".to_string());
@@ -116,10 +260,7 @@ impl MarketConfig {
         if self.min_price.0 == 0 {
             return Err("min_price must be greater than zero".to_string());
         }
-        if self.wasm_sha256.len() != 64 || !self.wasm_sha256.chars().all(|c| c.is_ascii_hexdigit())
-        {
-            return Err("wasm_sha256 must be a valid 64-character hex string".to_string());
-        }
+        validate_wasm_sha256(&self.wasm_sha256)?;
         if !self.wasm_url.starts_with("https://") {
             return Err("wasm_url must use https protocol".to_string());
         }
@@ -135,6 +276,112 @@ impl MarketConfig {
                 "build_target must be 1..={} UTF-8 bytes",
                 MAX_BUILD_TARGET_BYTES
             ));
+        }
+        if self.worker_mode.trim().is_empty() || self.worker_mode.len() > MAX_WORKER_MODE_BYTES {
+            return Err(format!(
+                "worker_mode must be 1..={} UTF-8 bytes",
+                MAX_WORKER_MODE_BYTES
+            ));
+        }
+        match self.worker_mode.as_str() {
+            MODE_FIXTURE => {
+                if self.symbol != MARKET_GESHA_DEMO {
+                    return Err(format!(
+                        "fixture mode is restricted strictly to '{}'",
+                        MARKET_GESHA_DEMO
+                    ));
+                }
+                if !self.allow_synthetic {
+                    return Err("fixture market must set allow_synthetic = true".to_string());
+                }
+                if self.min_source_count != 1 {
+                    return Err("fixture market requires min_source_count == 1".to_string());
+                }
+                if self.max_price_age_sec == 0 || self.max_price_age_sec > DEFAULT_MAX_PRICE_AGE_SEC
+                {
+                    return Err(format!(
+                        "fixture market requires max_price_age_sec in 1..={} seconds",
+                        DEFAULT_MAX_PRICE_AGE_SEC
+                    ));
+                }
+                if self.secrets_ref.is_some() {
+                    return Err("fixture market must have secrets_ref == None".to_string());
+                }
+                if self.max_source_spread_bps != 0 {
+                    return Err("fixture market requires max_source_spread_bps == 0".to_string());
+                }
+            }
+            MODE_PUBLIC_BENCHMARK => {
+                if self.symbol != MARKET_ARABICA_MONTHLY_IMF {
+                    return Err(format!(
+                        "public_benchmark mode is restricted strictly to '{}'",
+                        MARKET_ARABICA_MONTHLY_IMF
+                    ));
+                }
+                if self.allow_synthetic {
+                    return Err(
+                        "public_benchmark market must set allow_synthetic = false".to_string()
+                    );
+                }
+                if self.min_source_count != 1 {
+                    return Err(
+                        "public_benchmark market requires min_source_count == 1".to_string()
+                    );
+                }
+                if self.max_price_age_sec == 0
+                    || self.max_price_age_sec > HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC
+                {
+                    return Err(format!(
+                        "public_benchmark market requires max_price_age_sec in 1..={} seconds (90 days)",
+                        HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC
+                    ));
+                }
+                if self.max_source_spread_bps != 0 {
+                    return Err(
+                        "public_benchmark market requires max_source_spread_bps == 0".to_string(),
+                    );
+                }
+                if let Some(ref sr) = self.secrets_ref {
+                    sr.validate()?;
+                }
+            }
+            MODE_LIVE_INDEX => {
+                if self.symbol == MARKET_GESHA_DEMO || self.symbol == MARKET_ARABICA_MONTHLY_IMF {
+                    return Err(format!(
+                        "'{}' cannot be configured as a live_index market",
+                        self.symbol
+                    ));
+                }
+                if self.allow_synthetic {
+                    return Err("live_index market must set allow_synthetic = false".to_string());
+                }
+                if self.min_source_count < 1 {
+                    return Err("live_index market requires min_source_count >= 1".to_string());
+                }
+                if self.max_price_age_sec == 0
+                    || self.max_price_age_sec > DEFAULT_LIVE_INDEX_MAX_PRICE_AGE_SEC
+                {
+                    return Err(format!(
+                        "live_index market requires max_price_age_sec in 1..={} seconds",
+                        DEFAULT_LIVE_INDEX_MAX_PRICE_AGE_SEC
+                    ));
+                }
+                if self.max_source_spread_bps > MAX_SOURCE_SPREAD_BPS {
+                    return Err(format!(
+                        "max_source_spread_bps ({}) exceeds maximum ({})",
+                        self.max_source_spread_bps, MAX_SOURCE_SPREAD_BPS
+                    ));
+                }
+                if let Some(ref sr) = self.secrets_ref {
+                    sr.validate()?;
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unsupported worker_mode '{}': expected '{}', '{}' or '{}'",
+                    other, MODE_FIXTURE, MODE_PUBLIC_BENCHMARK, MODE_LIVE_INDEX
+                ));
+            }
         }
         Ok(())
     }

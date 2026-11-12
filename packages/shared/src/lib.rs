@@ -5,14 +5,48 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod fixed_point;
+pub use fixed_point::{
+    convert_cepea_brl_per_60kg_bag_e12_to_usd_per_kg_e8,
+    convert_ice_usc_per_lb_e12_to_usd_per_kg_e8, convert_usc_per_lb_e12_to_usd_per_kg_e8,
+    parse_decimal_e12, parse_decimal_e12_round_half_up, parse_decimal_e8, round_half_up_div_u128,
+    FixedPointError, CEPEA_BAG_WEIGHT_KG, FIXED_POINT_SCALE_E12, FIXED_POINT_SCALE_E12_DECIMALS,
+    FIXED_POINT_SCALE_E8, FIXED_POINT_SCALE_E8_DECIMALS, MAX_HIGH_PRECISION_DECIMAL_FRAC_DIGITS,
+    SI_GRAMS_PER_POUND_E8,
+};
+
 /// Canonical schema version supported by this release.
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// Initial demo market symbol for coffee price index.
 pub const MARKET_GESHA_DEMO: &str = "GESHA-DEMO/USD";
 
+/// Public historical monthly benchmark market sourced from IMF PCPS (`PCOFFOTM`).
+pub const MARKET_ARABICA_MONTHLY_IMF: &str = "ARABICA-MONTHLY-IMF/USD";
+
 /// Deterministic fixture execution mode.
 pub const MODE_FIXTURE: &str = "fixture";
+
+/// Historical public benchmark execution mode (no API key, monthly lag).
+pub const MODE_PUBLIC_BENCHMARK: &str = "public_benchmark";
+
+/// Live coffee index execution mode backed by real external sources.
+pub const MODE_LIVE_INDEX: &str = "live_index";
+
+/// Canonical source tag expected from deterministic fixture executions.
+pub const DEFAULT_FIXTURE_SOURCE: &str = "roastake-fixture";
+
+/// Canonical source identifier for IMF PCPS Other Mild Arabica (`PCOFFOTM`).
+pub const DEFAULT_IMF_PCPS_SOURCE: &str = "imf-pcps-pcoffotm";
+
+/// Maximum UTF-8 byte length for `WorkerOutput.source` / `PriceObservation.source`.
+pub const MAX_WORKER_SOURCE_BYTES: usize = 128;
+
+/// Maximum UTF-8 byte length for `WorkerOutput.data_class` / `PriceObservation.data_class`.
+pub const MAX_WORKER_DATA_CLASS_BYTES: usize = 32;
+
+/// Default maximum source spread allowed across participating providers (500 bps = 5%).
+pub const DEFAULT_MAX_SOURCE_SPREAD_BPS: u32 = 500;
 
 /// Standard unit of measure for coffee index observations.
 pub const UNIT_USD_PER_KG: &str = "USD/kg";
@@ -22,6 +56,18 @@ pub const DECIMALS_COFFEE_INDEX: u8 = 8;
 
 /// Data classification tag for synthetic demo observations.
 pub const DATA_CLASS_SYNTHETIC: &str = "SYNTHETIC_DEMO";
+
+/// Data classification tag for single-source historical monthly public benchmark observations.
+pub const DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY: &str = "PUBLIC_BENCHMARK_MONTHLY";
+
+/// Data classification tag for single-source verified live observations.
+pub const DATA_CLASS_LIVE_VERIFIED: &str = "LIVE_VERIFIED";
+
+/// Data classification tag for multi-source aggregated live observations.
+pub const DATA_CLASS_LIVE_AGGREGATED: &str = "LIVE_AGGREGATED";
+
+/// Mandatory attribution & disclosure notice for IMF PCPS (`PCOFFOTM`) metadata and docs (241 bytes <= 256).
+pub const IMF_PCPS_ATTRIBUTION_NOTICE: &str = "Source: International Monetary Fund (IMF), Primary Commodity Price System (PCPS), PCOFFOTM — ICO Other Mild Arabicas New York cash monthly average. Historical monthly data, not live ICE Coffee C futures, and does not imply IMF endorsement.";
 
 /// Official OutLayer coordinator contract on NEAR Testnet.
 pub const DEFAULT_OUTLAYER_TESTNET: &str = "outlayer.testnet";
@@ -34,6 +80,13 @@ pub const DEFAULT_BUILD_TARGET: &str = "wasm32-wasip2";
 
 /// Default maximum allowable price age in seconds (1 hour).
 pub const DEFAULT_MAX_PRICE_AGE_SEC: u64 = 3600;
+
+/// Maximum allowable price age ceiling for `live_index` markets (24 hours).
+pub const DEFAULT_LIVE_INDEX_MAX_PRICE_AGE_SEC: u64 = 24 * 60 * 60;
+
+/// Historical monthly benchmark maximum allowable price age in seconds (90 days = 7,776,000 s).
+/// Applies strictly to `ARABICA-MONTHLY-IMF/USD`; never weakens live or fixture markets.
+pub const HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC: u64 = 90 * 24 * 60 * 60;
 
 /// Maximum allowable clock drift into the future in seconds (1 minute).
 pub const DEFAULT_MAX_CLOCK_DRIFT_SEC: u64 = 60;
@@ -53,14 +106,56 @@ pub struct WorkerInput {
     pub schema_version: u32,
     pub market: String,
     pub mode: String,
+    /// Minimum participating sources required by market policy (used in `live_index` mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_source_count: Option<u32>,
+    /// Maximum acceptable upstream quote age in seconds (used in `live_index` mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_upstream_age_sec: Option<u64>,
+    /// Maximum allowed dispersion across participating sources in bps (used in `live_index` mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_source_spread_bps: Option<u32>,
 }
 
 impl WorkerInput {
+    /// Construct a deterministic fixture request preserving legacy wire JSON compatibility.
     pub fn new_fixture(market: impl Into<String>) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
             market: market.into(),
             mode: MODE_FIXTURE.to_string(),
+            min_source_count: None,
+            max_upstream_age_sec: None,
+            max_source_spread_bps: None,
+        }
+    }
+
+    /// Construct a public historical benchmark execution request (e.g., IMF PCPS monthly series).
+    pub fn new_public_benchmark(market: impl Into<String>, max_upstream_age_sec: u64) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            market: market.into(),
+            mode: MODE_PUBLIC_BENCHMARK.to_string(),
+            min_source_count: Some(1),
+            max_upstream_age_sec: Some(max_upstream_age_sec),
+            max_source_spread_bps: Some(0),
+        }
+    }
+
+    /// Construct a live index execution request carrying explicit market policy thresholds.
+    pub fn new_live_index(
+        market: impl Into<String>,
+        min_source_count: u32,
+        max_upstream_age_sec: u64,
+        max_source_spread_bps: u32,
+    ) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            market: market.into(),
+            mode: MODE_LIVE_INDEX.to_string(),
+            min_source_count: Some(min_source_count),
+            max_upstream_age_sec: Some(max_upstream_age_sec),
+            max_source_spread_bps: Some(max_source_spread_bps),
         }
     }
 
@@ -74,13 +169,78 @@ impl WorkerInput {
         if self.market.trim().is_empty() {
             return Err("market identifier cannot be empty".to_string());
         }
-        if self.mode != MODE_FIXTURE {
-            return Err(format!(
-                "unsupported mode '{}', only 'fixture' is enabled in this release",
-                self.mode
-            ));
+        match self.mode.as_str() {
+            MODE_FIXTURE => {
+                if self.min_source_count.is_some()
+                    || self.max_upstream_age_sec.is_some()
+                    || self.max_source_spread_bps.is_some()
+                {
+                    return Err(
+                        "fixture mode must not specify live policy threshold parameters"
+                            .to_string(),
+                    );
+                }
+                Ok(())
+            }
+            MODE_PUBLIC_BENCHMARK => {
+                if self.market != MARKET_ARABICA_MONTHLY_IMF {
+                    return Err(format!(
+                        "public_benchmark mode is restricted strictly to '{}', got '{}'",
+                        MARKET_ARABICA_MONTHLY_IMF, self.market
+                    ));
+                }
+                if self.min_source_count != Some(1) {
+                    return Err("public_benchmark mode requires min_source_count == 1".to_string());
+                }
+                let max_age = self.max_upstream_age_sec.ok_or_else(|| {
+                    "public_benchmark mode requires explicit max_upstream_age_sec".to_string()
+                })?;
+                if max_age == 0 || max_age > HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC {
+                    return Err(format!(
+                        "public_benchmark max_upstream_age_sec ({}) must be in 1..={} seconds",
+                        max_age, HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC
+                    ));
+                }
+                if self.max_source_spread_bps != Some(0) {
+                    return Err(
+                        "public_benchmark mode requires max_source_spread_bps == 0".to_string()
+                    );
+                }
+                Ok(())
+            }
+            MODE_LIVE_INDEX => {
+                if self.market == MARKET_GESHA_DEMO || self.market == MARKET_ARABICA_MONTHLY_IMF {
+                    return Err(format!(
+                        "market '{}' is not permitted in live_index mode",
+                        self.market
+                    ));
+                }
+                let min_sources = self.min_source_count.ok_or_else(|| {
+                    "live_index mode requires explicit min_source_count".to_string()
+                })?;
+                if min_sources < 1 {
+                    return Err("live_index min_source_count must be at least 1".to_string());
+                }
+                let max_age = self.max_upstream_age_sec.ok_or_else(|| {
+                    "live_index mode requires explicit max_upstream_age_sec".to_string()
+                })?;
+                if max_age == 0 {
+                    return Err(
+                        "live_index max_upstream_age_sec must be greater than zero".to_string()
+                    );
+                }
+                if self.max_source_spread_bps.is_none() {
+                    return Err(
+                        "live_index mode requires explicit max_source_spread_bps".to_string()
+                    );
+                }
+                Ok(())
+            }
+            other => Err(format!(
+                "unsupported mode '{}', expected '{}', '{}' or '{}'",
+                other, MODE_FIXTURE, MODE_PUBLIC_BENCHMARK, MODE_LIVE_INDEX
+            )),
         }
-        Ok(())
     }
 }
 
@@ -106,7 +266,7 @@ impl WorkerOutput {
             price: DEFAULT_FIXTURE_PRICE_STR.to_string(),
             decimals: DECIMALS_COFFEE_INDEX,
             unit: UNIT_USD_PER_KG.to_string(),
-            source: "roastake-fixture".to_string(),
+            source: DEFAULT_FIXTURE_SOURCE.to_string(),
             source_count: 1,
             observed_at: 0,
             data_class: DATA_CLASS_SYNTHETIC.to_string(),
@@ -147,8 +307,109 @@ impl WorkerOutput {
                 DECIMALS_COFFEE_INDEX, self.decimals
             ));
         }
+        if self.source.trim().is_empty() {
+            return Err("source cannot be empty".to_string());
+        }
+        if self.source.len() > MAX_WORKER_SOURCE_BYTES {
+            return Err(format!(
+                "source UTF-8 byte length ({}) exceeds maximum ({} bytes)",
+                self.source.len(),
+                MAX_WORKER_SOURCE_BYTES
+            ));
+        }
         if self.source_count == 0 {
             return Err("source_count must be at least 1".to_string());
+        }
+        if self.data_class.len() > MAX_WORKER_DATA_CLASS_BYTES {
+            return Err(format!(
+                "data_class UTF-8 byte length ({}) exceeds maximum ({} bytes)",
+                self.data_class.len(),
+                MAX_WORKER_DATA_CLASS_BYTES
+            ));
+        }
+        match self.data_class.as_str() {
+            DATA_CLASS_SYNTHETIC => {
+                if self.market != MARKET_GESHA_DEMO {
+                    return Err(format!(
+                        "'{}' is restricted strictly to '{}'",
+                        DATA_CLASS_SYNTHETIC, MARKET_GESHA_DEMO
+                    ));
+                }
+                if self.source != DEFAULT_FIXTURE_SOURCE {
+                    return Err(format!(
+                        "synthetic output requires source '{}', got '{}'",
+                        DEFAULT_FIXTURE_SOURCE, self.source
+                    ));
+                }
+                if self.source_count != 1 {
+                    return Err(format!(
+                        "synthetic output requires source_count == 1, got {}",
+                        self.source_count
+                    ));
+                }
+            }
+            DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY => {
+                if self.market != MARKET_ARABICA_MONTHLY_IMF {
+                    return Err(format!(
+                        "'{}' is restricted strictly to '{}'",
+                        DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY, MARKET_ARABICA_MONTHLY_IMF
+                    ));
+                }
+                if self.source != DEFAULT_IMF_PCPS_SOURCE {
+                    return Err(format!(
+                        "public benchmark output requires source '{}', got '{}'",
+                        DEFAULT_IMF_PCPS_SOURCE, self.source
+                    ));
+                }
+                if self.source_count != 1 {
+                    return Err(format!(
+                        "public benchmark output requires source_count == 1, got {}",
+                        self.source_count
+                    ));
+                }
+                if self.observed_at == 0 {
+                    return Err(
+                        "public benchmark output requires positive observed_at timestamp"
+                            .to_string(),
+                    );
+                }
+            }
+            DATA_CLASS_LIVE_VERIFIED => {
+                if self.market == MARKET_GESHA_DEMO || self.market == MARKET_ARABICA_MONTHLY_IMF {
+                    return Err(format!(
+                        "'{}' cannot be classified as '{}'",
+                        self.market, DATA_CLASS_LIVE_VERIFIED
+                    ));
+                }
+                if self.observed_at == 0 {
+                    return Err(
+                        "LIVE_VERIFIED output requires positive observed_at timestamp".to_string(),
+                    );
+                }
+            }
+            DATA_CLASS_LIVE_AGGREGATED => {
+                if self.market == MARKET_GESHA_DEMO || self.market == MARKET_ARABICA_MONTHLY_IMF {
+                    return Err(format!(
+                        "'{}' cannot be classified as '{}'",
+                        self.market, DATA_CLASS_LIVE_AGGREGATED
+                    ));
+                }
+                if self.source_count < 2 {
+                    return Err(format!(
+                        "LIVE_AGGREGATED output requires at least 2 sources, got {}",
+                        self.source_count
+                    ));
+                }
+                if self.observed_at == 0 {
+                    return Err(
+                        "LIVE_AGGREGATED output requires positive observed_at timestamp"
+                            .to_string(),
+                    );
+                }
+            }
+            other => {
+                return Err(format!("unsupported data_class '{}'", other));
+            }
         }
         let price_u128 = self.parse_price()?;
         if price_u128 == 0 {
@@ -542,5 +803,165 @@ mod tests {
         assert!(active_json.contains("\"attached_usd\":\"5000000\""));
         assert!(active_json.contains("\"use_bound_identity\":true"));
         assert!(!active_json.contains("store_on_fastfs"));
+    }
+
+    #[test]
+    fn test_worker_input_fixture_backwards_compatibility() {
+        let input = WorkerInput::new_fixture(MARKET_GESHA_DEMO);
+        assert!(input.validate().is_ok());
+
+        let json = serde_json::to_string(&input).unwrap();
+        assert_eq!(
+            json,
+            r#"{"schema_version":1,"market":"GESHA-DEMO/USD","mode":"fixture"}"#
+        );
+
+        let legacy_raw = r#"{"schema_version":1,"market":"GESHA-DEMO/USD","mode":"fixture"}"#;
+        let parsed: WorkerInput = serde_json::from_str(legacy_raw).unwrap();
+        assert_eq!(parsed, input);
+    }
+
+    #[test]
+    fn test_worker_input_live_index_and_secrets_ref_serialization() {
+        let input = WorkerInput::new_live_index("ARABICA-REF/USD", 2, 3600, 500);
+        assert!(input.validate().is_ok());
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"mode\":\"live_index\""));
+        assert!(json.contains("\"min_source_count\":2"));
+        assert!(json.contains("\"max_upstream_age_sec\":3600"));
+        assert!(json.contains("\"max_source_spread_bps\":500"));
+
+        let mut bad_fixture = WorkerInput::new_fixture(MARKET_GESHA_DEMO);
+        bad_fixture.min_source_count = Some(1);
+        assert!(bad_fixture.validate().is_err());
+
+        let mut bad_live = input.clone();
+        bad_live.min_source_count = Some(0);
+        assert!(bad_live.validate().is_err());
+
+        let mut missing_spread = input;
+        missing_spread.max_source_spread_bps = None;
+        assert!(missing_spread.validate().is_err());
+
+        let secrets_ref = SecretsReference {
+            profile: "prod".to_string(),
+            account_id: "roastake-secrets.testnet".to_string(),
+        };
+        let sr_json = serde_json::to_string(&secrets_ref).unwrap();
+        assert_eq!(
+            sr_json,
+            r#"{"profile":"prod","account_id":"roastake-secrets.testnet"}"#
+        );
+    }
+
+    #[test]
+    fn test_public_benchmark_monthly_class_bounds_and_validation() {
+        assert!(
+            DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY.len() <= MAX_WORKER_DATA_CLASS_BYTES,
+            "DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY ({} bytes) must fit in {} bytes",
+            DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY.len(),
+            MAX_WORKER_DATA_CLASS_BYTES
+        );
+        assert!(DEFAULT_IMF_PCPS_SOURCE.len() <= MAX_WORKER_SOURCE_BYTES);
+        assert!(IMF_PCPS_ATTRIBUTION_NOTICE.len() <= 256);
+
+        let input = WorkerInput::new_public_benchmark(
+            MARKET_ARABICA_MONTHLY_IMF,
+            HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC,
+        );
+        assert!(input.validate().is_ok());
+
+        let mut wrong_mkt_in = input.clone();
+        wrong_mkt_in.market = "ARABICA-REF/USD".to_string();
+        assert!(wrong_mkt_in.validate().is_err());
+
+        let mut excessive_age_in = input.clone();
+        excessive_age_in.max_upstream_age_sec = Some(HISTORICAL_MONTHLY_MAX_PRICE_AGE_SEC + 1);
+        assert!(excessive_age_in.validate().is_err());
+
+        // Reject ARABICA-MONTHLY-IMF/USD disguised under live_index
+        let bad_live_in = WorkerInput::new_live_index(MARKET_ARABICA_MONTHLY_IMF, 1, 3600, 0);
+        assert!(bad_live_in.validate().is_err());
+
+        let valid_out = WorkerOutput {
+            schema_version: SCHEMA_VERSION,
+            market: MARKET_ARABICA_MONTHLY_IMF.to_string(),
+            price: "727794219".to_string(),
+            decimals: DECIMALS_COFFEE_INDEX,
+            unit: UNIT_USD_PER_KG.to_string(),
+            source: DEFAULT_IMF_PCPS_SOURCE.to_string(),
+            source_count: 1,
+            observed_at: 1_790_812_799,
+            data_class: DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY.to_string(),
+        };
+        assert_eq!(
+            valid_out.validate(MARKET_ARABICA_MONTHLY_IMF).unwrap(),
+            727_794_219
+        );
+
+        // Wrong market rejected
+        let wrong_market_out = WorkerOutput {
+            market: "ARABICA-REF/USD".to_string(),
+            ..valid_out.clone()
+        };
+        assert!(wrong_market_out.validate("ARABICA-REF/USD").is_err());
+
+        // Wrong source rejected
+        let wrong_src_out = WorkerOutput {
+            source: "fred-csv".to_string(),
+            ..valid_out.clone()
+        };
+        assert!(wrong_src_out.validate(MARKET_ARABICA_MONTHLY_IMF).is_err());
+
+        // Zero observed_at rejected
+        let zero_ts_out = WorkerOutput {
+            observed_at: 0,
+            ..valid_out.clone()
+        };
+        assert!(zero_ts_out.validate(MARKET_ARABICA_MONTHLY_IMF).is_err());
+
+        // source_count != 1 rejected
+        let bad_cnt_out = WorkerOutput {
+            source_count: 2,
+            ..valid_out.clone()
+        };
+        assert!(bad_cnt_out.validate(MARKET_ARABICA_MONTHLY_IMF).is_err());
+
+        // Never allow IMF benchmark to masquerade as LIVE_VERIFIED or LIVE_AGGREGATED
+        let as_live_verified = WorkerOutput {
+            data_class: DATA_CLASS_LIVE_VERIFIED.to_string(),
+            ..valid_out.clone()
+        };
+        assert!(as_live_verified
+            .validate(MARKET_ARABICA_MONTHLY_IMF)
+            .is_err());
+
+        let as_live_agg = WorkerOutput {
+            source_count: 2,
+            data_class: DATA_CLASS_LIVE_AGGREGATED.to_string(),
+            ..valid_out.clone()
+        };
+        assert!(as_live_agg.validate(MARKET_ARABICA_MONTHLY_IMF).is_err());
+
+        // Keep SYNTHETIC_DEMO restricted strictly to GESHA-DEMO/USD
+        let synth_on_imf = WorkerOutput {
+            source: DEFAULT_FIXTURE_SOURCE.to_string(),
+            data_class: DATA_CLASS_SYNTHETIC.to_string(),
+            ..valid_out.clone()
+        };
+        assert!(synth_on_imf.validate(MARKET_ARABICA_MONTHLY_IMF).is_err());
+
+        // Unknown & oversized data_class rejected fail-closed
+        let unknown_cls = WorkerOutput {
+            data_class: "OFFICIAL_LIVE".to_string(),
+            ..valid_out.clone()
+        };
+        assert!(unknown_cls.validate(MARKET_ARABICA_MONTHLY_IMF).is_err());
+
+        let oversized_cls = WorkerOutput {
+            data_class: "X".repeat(MAX_WORKER_DATA_CLASS_BYTES + 1),
+            ..valid_out
+        };
+        assert!(oversized_cls.validate(MARKET_ARABICA_MONTHLY_IMF).is_err());
     }
 }

@@ -11,7 +11,13 @@ description = "OutLayer WASI worker for ROASTAKE Coffee Price Index calculation"
 name = "roastake-coffee-price-index"
 path = "src/main.rs"
 
+[features]
+default = []
+wasi-http = ["dep:wasi"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 roastake-shared = { path = "../../packages/shared" }
+url = "2"
+wasi = { version = "0.13", optional = true }

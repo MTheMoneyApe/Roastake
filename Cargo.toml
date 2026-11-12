@@ -2,7 +2,10 @@
 resolver = "2"
 members = [
     "packages/shared",
+    "packages/perps-core",
     "contracts/oracle-adapter",
+    "contracts/perpetuals",
+    "contracts/coffee-token",
     "workers/coffee-price-index",
 ]
 

@@ -20,7 +20,7 @@ Write-Host " Building Coffee Price Index WASI Worker         " -ForegroundColor 
 Write-Host " Target: wasm32-wasip2                           " -ForegroundColor Cyan
 Write-Host "=================================================" -ForegroundColor Cyan
 
-& cargo build --package roastake-coffee-price-index --target wasm32-wasip2 --release
+& cargo build --package roastake-coffee-price-index --target wasm32-wasip2 --release --features wasi-http
 
 $artifact = Join-Path $repoRoot "target\wasm32-wasip2\release\roastake-coffee-price-index.wasm"
 if (Test-Path $artifact) {

@@ -17,13 +17,17 @@ use near_sdk::{
 use outlayer::{calculate_execution_cost, ext_outlayer};
 use roastake_shared::{
     calculate_divergence_bps, extract_worker_output, validate_testnet_account_id, ExecutionSource,
-    ResourceLimits, WorkerInput, WorkerOutput, DATA_CLASS_SYNTHETIC, DEFAULT_MAX_CLOCK_DRIFT_SEC,
-    DEFAULT_OUTLAYER_TESTNET, MARKET_GESHA_DEMO, SCHEMA_VERSION,
+    ResourceLimits, WorkerOutput, DATA_CLASS_LIVE_AGGREGATED, DATA_CLASS_LIVE_VERIFIED,
+    DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY, DATA_CLASS_SYNTHETIC, DEFAULT_FIXTURE_SOURCE,
+    DEFAULT_IMF_PCPS_SOURCE, DEFAULT_MAX_CLOCK_DRIFT_SEC, DEFAULT_OUTLAYER_TESTNET,
+    MARKET_ARABICA_MONTHLY_IMF, MARKET_GESHA_DEMO, MODE_FIXTURE, MODE_LIVE_INDEX,
+    MODE_PUBLIC_BENCHMARK, SCHEMA_VERSION,
 };
 use types::{
-    AccountingSnapshot, ClaimStatus, InsuranceCompensation, InsuranceCompensationStatus,
-    MarketConfig, PendingRequest, PriceObservation, ReconcileOutcome, RefundClaim, RefundCredit,
-    RefundStatus, UnreconciledFailure, MAX_WORKER_DATA_CLASS_BYTES, MAX_WORKER_SOURCE_BYTES,
+    validate_wasm_sha256, AccountingSnapshot, ClaimStatus, InsuranceCompensation,
+    InsuranceCompensationStatus, MarketConfig, MarketSecretsRef, PendingRequest, PriceObservation,
+    ReconcileOutcome, RefundClaim, RefundCredit, RefundStatus, UnreconciledFailure,
+    MAX_WORKER_DATA_CLASS_BYTES, MAX_WORKER_SOURCE_BYTES,
 };
 
 /// Minimum age (in blocks) of an `InFlight` claim before it may be marked `Disputed`.
@@ -176,8 +180,10 @@ pub struct RoastakeOracleAdapter {
 impl RoastakeOracleAdapter {
     /// Initialize the Roastake Oracle Adapter contract on NEAR Testnet.
     ///
-    /// Requires an explicit positive `minimum_operating_reserve` to protect operating liquidity
-    /// and storage/gas margins. Never silently defaults the reserve to zero.
+    /// Requires an explicit positive `minimum_operating_reserve` and an explicit, non-zero
+    /// 64-char hex `initial_wasm_sha256` (no silent all-zero placeholder fallback).
+    /// Immediately registers both `GESHA-DEMO/USD` (fixture) and `ARABICA-MONTHLY-IMF/USD`
+    /// (IMF PCPS historical monthly benchmark) with isolated policies and distinct modes.
     #[init]
     pub fn init(
         admin: AccountId,
@@ -222,22 +228,34 @@ impl RoastakeOracleAdapter {
 
         let mut markets = IterableMap::new(b"m");
 
-        // Seed initial GESHA-DEMO/USD market configuration
+        // Require explicit valid non-zero worker SHA-256 (reject missing/all-zero placeholders)
         let wasm_url = initial_wasm_url.unwrap_or_else(|| {
             "https://test.fastfs.io/roastake/workers/roastake_coffee_price_index.wasm".to_string()
         });
         let wasm_sha256 = initial_wasm_sha256.unwrap_or_else(|| {
-            // Placeholder 64-char hex, updated via admin or deployment pipeline
-            "0000000000000000000000000000000000000000000000000000000000000000".to_string()
+            env::panic_str(
+                "ERR_MISSING_WASM_SHA256: initial_wasm_sha256 is required and cannot default to a placeholder",
+            )
         });
+        validate_wasm_sha256(&wasm_sha256)
+            .unwrap_or_else(|e| env::panic_str(&format!("ERR_INVALID_WASM_SHA256: {e}")));
 
-        let default_config = MarketConfig::gesha_demo_default(wasm_url, wasm_sha256);
-        default_config.validate().unwrap_or_else(|e| {
+        // Seed both default Testnet markets with isolated configurations
+        let gesha_config = MarketConfig::gesha_demo_default(wasm_url.clone(), wasm_sha256.clone());
+        gesha_config.validate().unwrap_or_else(|e| {
             env::panic_str(&format!(
-                "initial market configuration validation failed: {e}"
+                "initial GESHA-DEMO/USD market configuration validation failed: {e}"
             ))
         });
-        markets.insert(MARKET_GESHA_DEMO.to_string(), default_config);
+        markets.insert(MARKET_GESHA_DEMO.to_string(), gesha_config);
+
+        let imf_config = MarketConfig::arabica_monthly_imf_default(wasm_url, wasm_sha256);
+        imf_config.validate().unwrap_or_else(|e| {
+            env::panic_str(&format!(
+                "initial ARABICA-MONTHLY-IMF/USD market configuration validation failed: {e}"
+            ))
+        });
+        markets.insert(MARKET_ARABICA_MONTHLY_IMF.to_string(), imf_config);
 
         let mut instance = Self {
             admin,
@@ -246,7 +264,7 @@ impl RoastakeOracleAdapter {
             authorized_requesters: requesters,
             authorized_requester_count: 1,
             markets,
-            market_count: 1,
+            market_count: 2,
             prices: IterableMap::new(b"p"),
             pending_requests: LookupMap::new(b"q"),
             unreconciled_failures: LookupMap::new(b"u"),
@@ -307,12 +325,21 @@ impl RoastakeOracleAdapter {
             });
 
         require!(market_cfg.active, "Market is inactive");
+        market_cfg
+            .validate()
+            .unwrap_or_else(|e| env::panic_str(&format!("ERR_INVALID_MARKET_CONFIG: {e}")));
 
         // 3. Cost & Deposit check
         let resource_limits = ResourceLimits::default();
-        let input = WorkerInput::new_fixture(&market);
+        let input = market_cfg
+            .build_worker_input()
+            .unwrap_or_else(|e| env::panic_str(&format!("ERR_INVALID_WORKER_INPUT: {e}")));
         let input_json = serde_json::to_string(&input)
             .unwrap_or_else(|e| env::panic_str(&format!("Failed to serialize WorkerInput: {e}")));
+        let secrets_ref = market_cfg
+            .secrets_ref
+            .as_ref()
+            .map(MarketSecretsRef::to_outlayer_secrets_ref);
 
         let estimated_cost = calculate_execution_cost(&resource_limits, input_json.len() as u64);
         let deposit = env::attached_deposit();
@@ -391,7 +418,7 @@ impl RoastakeOracleAdapter {
                 source,
                 Some(resource_limits),
                 Some(input_json),
-                None, // secrets_ref
+                secrets_ref,
                 Some("Json".to_string()),
                 Some(caller), // payer_account_id: OutLayer's execution-settlement refund destination
                 None,         // params
@@ -2405,11 +2432,17 @@ pub fn validate_worker_output(
         ));
     }
 
-    // 3. Market symbol validation
+    // 3. Market symbol & configuration correspondence validation
     if worker_output.market != market {
         return Err(format!(
             "ERR_WRONG_MARKET: expected {}, got {}",
             market, worker_output.market
+        ));
+    }
+    if market_cfg.symbol != market {
+        return Err(format!(
+            "ERR_MARKET_CONFIG_MISMATCH: expected {}, got config for {}",
+            market, market_cfg.symbol
         ));
     }
 
@@ -2433,6 +2466,9 @@ pub fn validate_worker_output(
     if worker_output.source_count < 1 {
         return Err("ERR_ZERO_SOURCE_COUNT: source_count must be at least 1".to_string());
     }
+    if worker_output.source.trim().is_empty() {
+        return Err("ERR_EMPTY_SOURCE: source cannot be empty".to_string());
+    }
     if worker_output.source.len() > MAX_WORKER_SOURCE_BYTES {
         return Err(format!(
             "ERR_SOURCE_TOO_LONG: source UTF-8 byte length ({}) exceeds maximum ({} bytes)",
@@ -2448,7 +2484,176 @@ pub fn validate_worker_output(
         ));
     }
 
-    // 7. Price bounds validation
+    // 7. Data classification, synthetic protection, and quorum enforcement (fail closed)
+    match worker_output.data_class.as_str() {
+        DATA_CLASS_SYNTHETIC => {
+            if market != MARKET_GESHA_DEMO || market_cfg.symbol != MARKET_GESHA_DEMO {
+                return Err(format!(
+                    "ERR_SYNTHETIC_NOT_PERMITTED_FOR_MARKET: '{}' is restricted strictly to '{}'",
+                    DATA_CLASS_SYNTHETIC, MARKET_GESHA_DEMO
+                ));
+            }
+            if market_cfg.worker_mode != MODE_FIXTURE {
+                return Err(
+                    "ERR_SYNTHETIC_IN_LIVE_MODE: SYNTHETIC_DEMO rejected for non-fixture market configuration"
+                        .to_string(),
+                );
+            }
+            if !market_cfg.allow_synthetic {
+                return Err(
+                    "ERR_SYNTHETIC_DISABLED: SYNTHETIC_DEMO rejected because allow_synthetic is false"
+                        .to_string(),
+                );
+            }
+            if market_cfg.min_source_count != 1
+                || market_cfg.secrets_ref.is_some()
+                || market_cfg.max_source_spread_bps != 0
+            {
+                return Err(
+                    "ERR_INVALID_SYNTHETIC_CONFIG: synthetic output rejected due to inconsistent fixture configuration"
+                        .to_string(),
+                );
+            }
+            if worker_output.source != DEFAULT_FIXTURE_SOURCE {
+                return Err(format!(
+                    "ERR_INVALID_FIXTURE_SOURCE: expected '{}', got '{}'",
+                    DEFAULT_FIXTURE_SOURCE, worker_output.source
+                ));
+            }
+            if worker_output.source_count != 1 {
+                return Err(format!(
+                    "ERR_INVALID_FIXTURE_SOURCE_COUNT: synthetic output requires source_count == 1, got {}",
+                    worker_output.source_count
+                ));
+            }
+        }
+        DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY => {
+            if market != MARKET_ARABICA_MONTHLY_IMF
+                || market_cfg.symbol != MARKET_ARABICA_MONTHLY_IMF
+            {
+                return Err(format!(
+                    "ERR_PUBLIC_BENCHMARK_NOT_PERMITTED_FOR_MARKET: '{}' is restricted strictly to '{}'",
+                    DATA_CLASS_PUBLIC_BENCHMARK_MONTHLY, MARKET_ARABICA_MONTHLY_IMF
+                ));
+            }
+            if market_cfg.worker_mode != MODE_PUBLIC_BENCHMARK || market_cfg.allow_synthetic {
+                return Err(
+                    "ERR_PUBLIC_BENCHMARK_INVALID_MODE: PUBLIC_BENCHMARK_MONTHLY requires public_benchmark policy with allow_synthetic = false"
+                        .to_string(),
+                );
+            }
+            if market_cfg.min_source_count != 1 || market_cfg.max_source_spread_bps != 0 {
+                return Err(
+                    "ERR_PUBLIC_BENCHMARK_INVALID_CONFIG: PUBLIC_BENCHMARK_MONTHLY requires min_source_count == 1 and max_source_spread_bps == 0"
+                        .to_string(),
+                );
+            }
+            if worker_output.source != DEFAULT_IMF_PCPS_SOURCE {
+                return Err(format!(
+                    "ERR_INVALID_PUBLIC_BENCHMARK_SOURCE: expected '{}', got '{}'",
+                    DEFAULT_IMF_PCPS_SOURCE, worker_output.source
+                ));
+            }
+            if worker_output.source_count != 1 {
+                return Err(format!(
+                    "ERR_INVALID_PUBLIC_BENCHMARK_SOURCE_COUNT: public benchmark output requires source_count == 1, got {}",
+                    worker_output.source_count
+                ));
+            }
+            if worker_output.observed_at == 0 {
+                return Err(
+                    "ERR_ZERO_TIMESTAMP_NOT_PERMITTED: observed_at=0 is forbidden for PUBLIC_BENCHMARK_MONTHLY outputs"
+                        .to_string(),
+                );
+            }
+        }
+        DATA_CLASS_LIVE_VERIFIED => {
+            if market_cfg.worker_mode != MODE_LIVE_INDEX || market_cfg.allow_synthetic {
+                return Err(
+                    "ERR_LIVE_OUTPUT_IN_FIXTURE_MODE: LIVE_VERIFIED output requires live_index policy with allow_synthetic = false"
+                        .to_string(),
+                );
+            }
+            if market == MARKET_GESHA_DEMO
+                || market_cfg.symbol == MARKET_GESHA_DEMO
+                || market == MARKET_ARABICA_MONTHLY_IMF
+                || market_cfg.symbol == MARKET_ARABICA_MONTHLY_IMF
+            {
+                return Err(format!(
+                    "ERR_LIVE_CLASS_NOT_PERMITTED_FOR_MARKET: '{}' cannot be classified as '{}'",
+                    market, DATA_CLASS_LIVE_VERIFIED
+                ));
+            }
+            if market_cfg.min_source_count < 1 {
+                return Err(
+                    "ERR_INVALID_MARKET_CONFIG: live_index market requires min_source_count >= 1"
+                        .to_string(),
+                );
+            }
+            if worker_output.source_count < market_cfg.min_source_count {
+                return Err(format!(
+                    "ERR_INSUFFICIENT_SOURCE_COUNT: expected at least {} sources, got {}",
+                    market_cfg.min_source_count, worker_output.source_count
+                ));
+            }
+            if worker_output.observed_at == 0 {
+                return Err(
+                    "ERR_ZERO_TIMESTAMP_NOT_PERMITTED: observed_at=0 is forbidden for LIVE_VERIFIED outputs"
+                        .to_string(),
+                );
+            }
+        }
+        DATA_CLASS_LIVE_AGGREGATED => {
+            if market_cfg.worker_mode != MODE_LIVE_INDEX || market_cfg.allow_synthetic {
+                return Err(
+                    "ERR_LIVE_OUTPUT_IN_FIXTURE_MODE: LIVE_AGGREGATED output requires live_index policy with allow_synthetic = false"
+                        .to_string(),
+                );
+            }
+            if market == MARKET_GESHA_DEMO
+                || market_cfg.symbol == MARKET_GESHA_DEMO
+                || market == MARKET_ARABICA_MONTHLY_IMF
+                || market_cfg.symbol == MARKET_ARABICA_MONTHLY_IMF
+            {
+                return Err(format!(
+                    "ERR_LIVE_CLASS_NOT_PERMITTED_FOR_MARKET: '{}' cannot be classified as '{}'",
+                    market, DATA_CLASS_LIVE_AGGREGATED
+                ));
+            }
+            if market_cfg.min_source_count < 1 {
+                return Err(
+                    "ERR_INVALID_MARKET_CONFIG: live_index market requires min_source_count >= 1"
+                        .to_string(),
+                );
+            }
+            if worker_output.source_count < 2 {
+                return Err(format!(
+                    "ERR_AGGREGATED_REQUIRES_MULTIPLE_SOURCES: LIVE_AGGREGATED requires at least 2 participating sources, got {}",
+                    worker_output.source_count
+                ));
+            }
+            if worker_output.source_count < market_cfg.min_source_count {
+                return Err(format!(
+                    "ERR_INSUFFICIENT_SOURCE_COUNT: expected at least {} sources, got {}",
+                    market_cfg.min_source_count, worker_output.source_count
+                ));
+            }
+            if worker_output.observed_at == 0 {
+                return Err(
+                    "ERR_ZERO_TIMESTAMP_NOT_PERMITTED: observed_at=0 is forbidden for LIVE_AGGREGATED outputs"
+                        .to_string(),
+                );
+            }
+        }
+        other => {
+            return Err(format!(
+                "ERR_UNSUPPORTED_DATA_CLASS: unknown or unsupported data_class '{}'",
+                other
+            ));
+        }
+    }
+
+    // 8. Price bounds validation
     let price_u128 = worker_output
         .parse_price()
         .map_err(|e| format!("ERR_MALFORMED_PRICE: {e}"))?;
@@ -2463,7 +2668,7 @@ pub fn validate_worker_output(
         ));
     }
 
-    // 8. Excessive price movement (divergence) validation
+    // 9. Excessive price movement (divergence) validation
     if let Some(existing) = existing_price {
         if market_cfg.max_divergence_bps > 0 {
             let div_bps = calculate_divergence_bps(existing.price.0, price_u128);
@@ -2476,10 +2681,17 @@ pub fn validate_worker_output(
         }
     }
 
-    // 9. Timestamp freshness and monotonic validation
+    // 10. Timestamp freshness and monotonic validation
     if worker_output.observed_at == 0 {
-        if worker_output.data_class != DATA_CLASS_SYNTHETIC {
-            return Err("ERR_NON_DEMO_ZERO_TIMESTAMP: observed_at=0 only permitted for synthetic demo fixtures".to_string());
+        if worker_output.data_class != DATA_CLASS_SYNTHETIC
+            || market != MARKET_GESHA_DEMO
+            || !market_cfg.allow_synthetic
+            || market_cfg.worker_mode != MODE_FIXTURE
+        {
+            return Err(
+                "ERR_NON_DEMO_ZERO_TIMESTAMP: observed_at=0 only permitted for GESHA-DEMO/USD synthetic fixture"
+                    .to_string(),
+            );
         }
     } else {
         if worker_output.observed_at > now_sec + DEFAULT_MAX_CLOCK_DRIFT_SEC {
@@ -2677,6 +2889,9 @@ impl RoastakeOracleAdapter {
         config.max_price = max_price;
         config.max_price_age_sec = max_price_age_sec;
         config.max_divergence_bps = max_divergence_bps;
+        config.validate().unwrap_or_else(|e| {
+            env::panic_str(&format!("market configuration validation failed: {e}"))
+        });
 
         self.markets.insert(market, config);
         self.flush_storage();
