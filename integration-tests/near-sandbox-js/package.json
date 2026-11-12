@@ -12,6 +12,7 @@
     "test:abi-smoke": "NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-abi-smoke.test.mjs",
     "test:e2e": "NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-e2e.test.mjs",
     "test:hardening": "NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-admin-hardening.test.mjs",
+    "test:imf": "NEAR_WORKSPACES_NETWORK=sandbox node --test test/sandbox-imf-benchmark.test.mjs",
     "test:release-candidate": "NEAR_WORKSPACES_NETWORK=sandbox node --test --test-concurrency=1 test/sandbox-abi-smoke.test.mjs test/sandbox-e2e.test.mjs test/sandbox-admin-hardening.test.mjs"
   },
   "dependencies": {
