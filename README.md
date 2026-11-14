@@ -1,79 +1,22 @@
-# Roastake
+# ROASTAKE — Finance infrastructure for the coffee economy
 
-**Roastake is a commodity-finance platform focused initially on coffee markets.** The project starts with a NEAR Protocol Testnet perpetuals prototype and is designed to grow into the wider Roastake ecosystem.
+ROASTAKE explores how NEAR can connect coffee price risk management with a wider coffee-finance ecosystem: perpetual markets, test-token swaps, traceability concepts and, in later phases, verified real-world inventory and commercial settlement.
 
-> **Current development status:** early-stage, Testnet-only prototype. Features described as future phases are roadmap items, not implemented functionality.
+## Current evaluation release
 
-## Vision
+The active hackathon implementation is maintained on the **`hackathon-submission`** branch. That branch's [README](https://github.com/MTheMoneyApe/Roastake/blob/hackathon-submission/README.md) is the authoritative guide to current Testnet contracts, transaction evidence, architecture, reproduction steps and limitations.
 
-Build a unified platform connecting coffee price discovery, trading, procurement and real-world coffee commerce.
+The implementation includes three coffee perpetual markets on NEAR Testnet, RHEA Mini Swap using non-monetary test tokens, and a separate Oracle Adapter / OutLayer workstream. Perps prices are operator-controlled synthetic references, not live market quotations. The Marketplace, Coffee Passport, Roast and Redeem flows remain browser-only illustrations; physical coffee custody and redemption are not verified.
 
-The long-term platform may include:
+## Problem and direction
 
-- **Roastake Perps:** perpetual markets for coffee varieties and other commodities.
-- **Coffee Price Indices:** transparent, methodology-driven reference prices by variety, origin, process and quality.
-- **Roastake Spot:** a marketplace for coffee assets and, subject to verification and legal design, inventory-backed tokenized coffee.
-- **Roastake Trade:** B2B procurement, supplier quotations and commercial settlement.
-- **Roastake Treasury & Finance:** future financing, collateral and yield products for coffee-related businesses.
+Coffee participants face disconnected tools for hedging, purchasing and following a lot from producer to roaster. ROASTAKE's long-term goal is an accessible financial layer for that economy, starting with a small, verifiable NEAR Testnet perpetuals prototype and expanding only when data, custody, legal and commercial integrations are ready.
 
-These modules will be developed in stages. The initial repository foundation should avoid assumptions that would prevent the broader platform from being added later.
+## Source-of-truth boundary
 
-## Phase 1 — NEAR Testnet Perpetuals
+- `main` remains the repository baseline.
+- `hackathon-submission` contains the current hackathon code and its verified implementation documentation.
+- All Testnet assets and transactions have no monetary value.
+- No Mainnet release or independent third-party security audit is claimed.
 
-The first deliverable is a working perpetual-market prototype on **NEAR Testnet only**.
-
-Initial market: `GESHA-DEMO/USD`
-
-Planned MVP components:
-
-- OutLayer integration for verifiable off-chain computation and oracle data delivery.
-- A Roastake Oracle Adapter and on-chain price registry.
-- A clearly labelled demonstration coffee index. Synthetic/demo values must never be presented as live or official market quotations.
-- A demo collateral token with no monetary value.
-- Long and short positions, position accounting, margin, PnL, funding and test liquidations.
-- A trading interface, transaction history and Testnet Explorer links.
-- Automated tests, security checks and reproducible deployment instructions.
-
-All token balances, prices and trading activity in this phase are for testing only. No real funds, mainnet contracts or mainnet transaction flows are part of the MVP.
-
-## Oracle and price-data principles
-
-OutLayer is the initial oracle/computing integration target for NEAR Testnet. The application must keep the oracle integration behind a provider adapter so that other providers can be evaluated later without rewriting the trading engine.
-
-An execution attestation does not, by itself, prove that an external market quotation is accurate. Price methodology, source quality, freshness, outlier handling, signer authorization and failure behaviour must be documented and tested.
-
-Initial demonstration prices are synthetic unless explicitly sourced and labelled otherwise. ICO, ICE and commercial supplier integrations must not be claimed until access, source terms and actual data ingestion have been verified.
-
-## Development principles
-
-1. **Testnet-only by default:** reject mainnet configuration and transaction destinations in the MVP.
-2. **Security before leverage:** use fixed-point arithmetic, explicit margin rules, stale-price protection and fail-closed oracle handling.
-3. **Small, modular components:** separate the oracle adapter, price registry, collateral token, perpetual engine and frontend.
-4. **Verifiable claims:** document what is implemented, simulated, planned and independently verified.
-5. **Preserve the wider vision:** build the perpetuals module as the first part of Roastake, not as a separate product that has to be replaced later.
-
-## Planned repository structure
-
-The repository may evolve toward the following modular layout:
-
-```text
-apps/
-  web/                  # Roastake application and trading terminal
-contracts/
-  oracle-adapter/       # OutLayer integration and price registry
-  perpetuals/           # Positions, margin, funding and liquidations
-  demo-token/           # Test collateral token
-workers/
-  coffee-price-index/   # External data collection and index calculation
-packages/
-  shared/               # Shared types, schemas and utilities
-  oracle-client/        # Oracle request and response client
-docs/
-tests/
-```
-
-The structure is a target architecture; directories and components will be created only when needed.
-
-## License
-
-Licensed under the [Apache License 2.0](LICENSE).
+For the current Preview, frontend source and evaluation instructions, see [MTheMoneyApe/Roastake-frontend](https://github.com/MTheMoneyApe/Roastake-frontend).
