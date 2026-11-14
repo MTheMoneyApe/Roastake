@@ -45,7 +45,7 @@ Example for the ROASTAKE Preview and production origins:
 ```env
 HOST=0.0.0.0
 PORT=8787
-CORS_ORIGIN=https://roastake-git-feat-degen-mode-easter-egg-astrym.vercel.app,https://roastake.vercel.app
+CORS_ORIGIN=https://roastake-ex387b8yd-astrym.vercel.app,https://roastake-git-feat-degen-mode-easter-egg-astrym.vercel.app,https://roastake.vercel.app
 ```
 
 Set the public API URL in the frontend build as `VITE_PERPS_HISTORY_API_URL`. Never expose `FASTNEAR_API_KEY` or wallet credentials to Vite or the browser.

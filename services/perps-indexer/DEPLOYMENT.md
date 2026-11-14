@@ -7,7 +7,7 @@
 ```env
 HOST=0.0.0.0
 PORT=8787
-CORS_ORIGIN=https://roastake-git-feat-degen-mode-easter-egg-astrym.vercel.app,https://roastake.vercel.app
+CORS_ORIGIN=https://roastake-ex387b8yd-astrym.vercel.app,https://roastake-git-feat-degen-mode-easter-egg-astrym.vercel.app,https://roastake.vercel.app
 ```
 
 The service also accepts legacy `PERPS_INDEXER_HOST`, `PERPS_INDEXER_PORT` and `PERPS_INDEXER_CORS_ORIGINS` values as fallbacks. Standard `HOST`, `PORT` and `CORS_ORIGIN` take priority.

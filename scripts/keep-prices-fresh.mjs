@@ -31,7 +31,20 @@ function required(name) {
   if (!value) throw new Error("Missing " + name + " in " + envFile + ".");
   return value;
 }
-const pauseOrStop = (ms, stop) => Promise.race([new Promise((resolve) => setTimeout(resolve, ms)), stop]);
+async function pauseOrStop(ms, stop) {
+  let timer;
+  try {
+    await Promise.race([
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+      stop,
+    ]);
+  } finally {
+    // Do not leave the interval timer alive after SIGINT/SIGTERM.
+    if (timer) clearTimeout(timer);
+  }
+}
 async function main() {
   loadEnv();
   const operator = required("NEAR_OPERATOR_ACCOUNT_ID");
