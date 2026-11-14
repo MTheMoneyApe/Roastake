@@ -1,0 +1,27 @@
+name: Backend quality
+
+on:
+  push:
+    branches: [hackathon-submission]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node-validation:
+    name: Indexer tests and operator helper syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check operator helper syntax
+        run: node --check scripts/keep-prices-fresh.mjs
+      - name: Run indexer test suite
+        working-directory: services/perps-indexer
+        run: node --test test/*.test.mjs
