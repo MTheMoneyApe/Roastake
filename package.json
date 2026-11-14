@@ -1,0 +1,11 @@
+{
+  "name": "roastake-operations",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "keep-prices-fresh": "node scripts/keep-prices-fresh.mjs"
+  },
+  "dependencies": {
+    "near-api-js": "7.4.0"
+  }
+}
