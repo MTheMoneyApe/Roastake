@@ -20,6 +20,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install pinned operator dependency
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Resolve operator SDK exports
+        run: node --input-type=module -e 'import("near-api-js").then((m) => { if (!m.Account || !m.JsonRpcProvider || !m.teraToGas) process.exit(1); })'
       - name: Check operator helper syntax
         run: node --check scripts/keep-prices-fresh.mjs
       - name: Run indexer test suite
