@@ -39,6 +39,26 @@ export const APPROVED_CORS_ORIGINS = [
   "http://localhost:3000",
 ];
 
+export function parseCorsOrigins(rawValue, fallback = APPROVED_CORS_ORIGINS) {
+  const values = Array.isArray(rawValue) ? rawValue :
+    rawValue === undefined || rawValue === null || String(rawValue).trim() === "" ? fallback : String(rawValue).split(",");
+  const origins = values.map((value) => String(value).trim()).filter(Boolean);
+  if (!origins.length) throw new PolicyError("At least one explicit CORS origin is required.");
+  const normalized = [];
+  for (const origin of origins) {
+    if (origin === "*") throw new PolicyError("CORS wildcard is forbidden.");
+    let parsed;
+    try { parsed = new URL(origin); } catch { throw new PolicyError("Invalid CORS origin: " + origin); }
+    if (!["https:", "http:"].includes(parsed.protocol) || parsed.origin !== origin || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+      throw new PolicyError("CORS value must be an exact origin without path or credentials: " + origin);
+    }
+    if (parsed.protocol === "http:" && !["localhost", "127.0.0.1"].includes(parsed.hostname)) throw new PolicyError("Public CORS origins must use HTTPS.");
+    if (!normalized.includes(parsed.origin)) normalized.push(parsed.origin);
+  }
+  return normalized;
+}
+
+
 export const ARABICA_MIN_PRICE_E8 = 100_000_000n; // $1.00/kg
 export const ARABICA_MAX_PRICE_E8 = 10_000_000_000n; // $100.00/kg
 export const SANDBOX_PRICE_MIN_E8 = 100_000_000n; // $1.00/kg
@@ -56,7 +76,7 @@ export const DEFAULT_MAX_RPM_AUTH = 600;
 export const DEFAULT_BLOCK_PACING_MS = 500;
 export const DEFAULT_NEAR_TIP_404_TOLERANCE_BLOCKS = 5;
 export const DEFAULT_MAX_TRANSIENT_404_RETRIES = 3;
-export const DEFAULT_HTTP_HOST = "127.0.0.1";
+export const DEFAULT_HTTP_HOST = "0.0.0.0";
 export const DEFAULT_HTTP_PORT = 8787;
 export const DEFAULT_DATA_DIR = path.join(REPO_ROOT, "data", "perps-indexer");
 
@@ -307,21 +327,16 @@ export function loadIndexerConfig(overrides = {}, env = process.env) {
     throw new Error("marketId must not be empty.");
   }
 
-  const httpHost = String(overrides.httpHost ?? env.PERPS_INDEXER_HOST ?? DEFAULT_HTTP_HOST).trim();
-  if (httpHost !== "127.0.0.1" && httpHost !== "localhost") {
-    throw new PolicyError(
-      `Local API safety guard: refusing non-loopback HTTP bind host "${httpHost}".`,
-    );
+  const httpHost = String(
+    overrides.httpHost ?? env.HOST ?? env.PERPS_INDEXER_HOST ?? DEFAULT_HTTP_HOST,
+  ).trim().toLowerCase();
+  if (!["0.0.0.0", "127.0.0.1", "localhost"].includes(httpHost)) {
+    throw new PolicyError("Unsupported HTTP bind host: " + httpHost + ". Use 0.0.0.0 for public hosting or localhost for local development.");
   }
 
-  const corsRaw = overrides.corsOrigins ??
-    (env.PERPS_INDEXER_CORS_ORIGINS
-      ? env.PERPS_INDEXER_CORS_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean)
-      : APPROVED_CORS_ORIGINS);
-  if (corsRaw.includes("*")) {
-    throw new PolicyError("CORS wildcard '*' is strictly forbidden.");
-  }
-
+  const corsRaw = parseCorsOrigins(
+    overrides.corsOrigins ?? env.CORS_ORIGIN ?? env.PERPS_INDEXER_CORS_ORIGINS,
+  );
   // Optional FastNear API key — kept strictly in server memory, never sent to frontend or logs.
   const rawApiKey = overrides.fastnearApiKey ?? env.FASTNEAR_API_KEY ?? "";
   const fastnearApiKey = typeof rawApiKey === "string" && rawApiKey.trim().length > 0
@@ -453,7 +468,7 @@ export function loadIndexerConfig(overrides = {}, env = process.env) {
     jitterRatio: overrides.jitterRatio ?? 0.2,
     httpHost,
     httpPort: parseIntEnv(
-      overrides.httpPort ?? env.PERPS_INDEXER_PORT,
+      overrides.httpPort ?? env.PORT ?? env.PERPS_INDEXER_PORT,
       DEFAULT_HTTP_PORT,
       0,
       65_535,
