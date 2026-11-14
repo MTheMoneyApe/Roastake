@@ -60,7 +60,7 @@ function loadOptionalOracleConfig(primaryOperator) {
     process.stderr.write("Oracle Adapter ping disabled: ORACLE_ADAPTER_MARKET must be a non-empty market symbol of at most 64 characters.\\n");
     return null;
   }
-  if (!/^\\d+$/.test(depositRaw) || BigInt(depositRaw) <= 0n) {
+  if (!/^\d+$/.test(depositRaw) || BigInt(depositRaw) <= 0n) {
     process.stderr.write("Oracle Adapter ping disabled: ORACLE_ADAPTER_DEPOSIT_YOCTO must be a positive integer.\\n");
     return null;
   }
