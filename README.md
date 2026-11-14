@@ -95,7 +95,7 @@ node --test test/*.test.mjs
 node src/indexer.mjs
 ```
 
-For public indexer hosting, configure `HOST=0.0.0.0`, platform `PORT`, exact `CORS_ORIGIN` values and a persistent writable data disk. See [indexer deployment notes](services/perps-indexer/DEPLOYMENT.md). Set the public HTTPS service URL in the frontend build as `VITE_PERPS_HISTORY_API_URL`.
+For public indexer hosting, configure `HOST=0.0.0.0`, platform `PORT`, exact `CORS_ORIGIN` values and a persistent writable data disk. See [indexer deployment notes](services/perps-indexer/DEPLOYMENT.md) and the [Railway 24/7 deployment guide](CLOUD_DEPLOY.md). Set the public HTTPS service URL in the frontend build as `VITE_PERPS_HISTORY_API_URL`.
 
 ### Keep prices fresh for jury testing
 

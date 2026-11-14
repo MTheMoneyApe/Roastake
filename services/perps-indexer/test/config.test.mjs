@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-ROASTAKE-Evaluation-Only
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import { loadIndexerConfig, parseCorsOrigins, PolicyError } from "../src/config.mjs";
 
 describe("public HTTP configuration", () => {
@@ -21,6 +22,18 @@ describe("public HTTP configuration", () => {
     assert.equal(config.httpHost, "localhost");
     assert.equal(config.httpPort, 8788);
     assert.deepEqual(config.corsOrigins, ["http://localhost:3000"]);
+  });
+  it("prefers INDEXER_DATA_DIR for persistent cloud volumes", () => {
+    const config = loadIndexerConfig({}, {
+      INDEXER_DATA_DIR: "/data",
+      PERPS_INDEXER_DATA_DIR: "/legacy-data",
+    });
+    assert.equal(config.dataDir, path.resolve("/data"));
+    assert.equal(config.markets[0].dataDir, path.resolve("/data"));
+  });
+  it("retains PERPS_INDEXER_DATA_DIR as a legacy fallback", () => {
+    const config = loadIndexerConfig({}, { PERPS_INDEXER_DATA_DIR: "/legacy-data" });
+    assert.equal(config.dataDir, path.resolve("/legacy-data"));
   });
   it("rejects wildcard, public HTTP and path-bearing origins", () => {
     assert.throws(() => parseCorsOrigins("*"), PolicyError);

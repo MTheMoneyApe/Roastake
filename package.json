@@ -3,6 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start:indexer": "node services/perps-indexer/src/indexer.mjs",
+    "start:keeper": "node scripts/keep-prices-fresh.mjs",
     "keep-prices-fresh": "node scripts/keep-prices-fresh.mjs"
   },
   "dependencies": {

@@ -37,7 +37,7 @@ node src/indexer.mjs
 | `PORT` | `8787` | HTTP listen port; platform-injected `PORT` takes priority |
 | `CORS_ORIGIN` | Local development origins | Comma-separated exact frontend origins including scheme; wildcard rejected |
 | `FASTNEAR_API_KEY` | Empty | Optional server-only NEAR Data bearer key |
-| `PERPS_INDEXER_DATA_DIR` | `data/perps-indexer` | Persistent writable directory |
+| `INDEXER_DATA_DIR` | `data/perps-indexer` | Persistent writable directory; overrides legacy `PERPS_INDEXER_DATA_DIR` |
 | `PERPS_INDEXER_POLL_MS` | `2500` | Poll interval |
 
 Example for the ROASTAKE Preview and production origins:
@@ -50,7 +50,7 @@ CORS_ORIGIN=https://roastake-ex387b8yd-astrym.vercel.app,https://roastake-git-fe
 
 Set the public API URL in the frontend build as `VITE_PERPS_HISTORY_API_URL`. Never expose `FASTNEAR_API_KEY` or wallet credentials to Vite or the browser.
 
-**Persistence requirement:** mount a persistent disk at `PERPS_INDEXER_DATA_DIR`. The indexer writes append-only JSONL events, cursors and health files. Ephemeral serverless filesystems are not a durable deployment target. Run a single writer per data directory because the store uses an exclusive process lock.
+**Persistence requirement:** mount a persistent disk at `INDEXER_DATA_DIR` (for example, `/data` on Railway). Legacy `PERPS_INDEXER_DATA_DIR` remains a lower-priority fallback. The indexer writes append-only JSONL events, cursors and health files. Ephemeral serverless filesystems are not a durable deployment target. Run a single writer per data directory because the store uses an exclusive process lock.
 
 ## Coverage and security
 

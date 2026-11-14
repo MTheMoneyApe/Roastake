@@ -354,7 +354,7 @@ export function loadIndexerConfig(overrides = {}, env = process.env) {
     ? Math.max(50, Math.floor(60_000 / maxRequestsPerMinute))
     : DEFAULT_BLOCK_PACING_MS;
 
-  const resolvedDataDir = path.resolve(overrides.dataDir ?? env.PERPS_INDEXER_DATA_DIR ?? DEFAULT_DATA_DIR);
+  const resolvedDataDir = path.resolve(overrides.dataDir ?? env.INDEXER_DATA_DIR ?? env.PERPS_INDEXER_DATA_DIR ?? DEFAULT_DATA_DIR);
   const resolvedBackfillTxs = overrides.backfillTransactions ?? M046G_BACKFILL_TRANSACTIONS;
   const hasExplicitMarketOverride =
     overrides.marketId !== undefined || Boolean(env.PERPS_INDEXER_MARKET_ID);
