@@ -1,3 +1,7 @@
+> **Status notice (2026-11-14): superseded for current project status.** This file is retained as historical design/operations documentation and may describe earlier implementation gates. For the authoritative current implementation, deployed contract registry, transaction evidence and evaluation instructions, use the [current ROASTAKE README](../README.md). Do not use this document alone to infer present deployment state.
+
+---
+
 # OutLayer on NEAR Testnet
 
 ## Official References
