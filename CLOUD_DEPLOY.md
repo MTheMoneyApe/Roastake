@@ -11,14 +11,24 @@ For each Railway service:
 - Source repository: `MTheMoneyApe/Roastake`
 - Branch: `hackathon-submission`
 - Root directory: repository root (`/`)
-- Build command: `npm install --omit=dev --no-audit --no-fund`
+- Build strategy: the service-specific Dockerfile selected with `RAILWAY_DOCKERFILE_PATH` (this repository also contains Rust contracts, so do not let Railpack infer the runtime from the root `Cargo.toml`).
 - Node runtime: Node.js 22 or newer
 
-The root install provides the pinned `near-api-js@7.4.0` signer dependency used by the worker. Railway injects `PORT` into the web service; do not hard-code a second port. Set secrets in Railway's Variables panel, never in Git.
+The Indexer Dockerfile runs the repository's `start:indexer` script. The Keeper Dockerfile installs the pinned `near-api-js@7.4.0` dependency and runs `start:keeper`. Railway injects `PORT` into the web service; do not hard-code a second port. Set secrets in Railway's Variables panel, never in Git.
 
 ## 1. Service 1 — Web Service: persistent Perps Indexer
 
 Create a Railway service from the repository and set:
+
+**Dockerfile selection**
+
+Set this Railway service variable:
+
+```env
+RAILWAY_DOCKERFILE_PATH=Dockerfile.indexer
+```
+
+The Dockerfile runs `npm run start:indexer` from the repository root.
 
 **Start command**
 
@@ -81,6 +91,16 @@ https://<your-indexer-domain>/v1/perps/gesha/history
 ## 2. Service 2 — Background Worker: Perps Price Keeper
 
 Create a second Railway service from the same repository/branch. Do not expose a public HTTP port and do not attach the indexer's volume.
+
+**Dockerfile selection**
+
+Set this Railway service variable:
+
+```env
+RAILWAY_DOCKERFILE_PATH=Dockerfile.keeper
+```
+
+The Dockerfile installs the pinned root dependency and runs `npm run start:keeper`.
 
 **Start command**
 
