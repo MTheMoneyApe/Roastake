@@ -587,6 +587,8 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       lastTransactionBlockHeight: state.lastTransactionBlockHeight ?? null,
       lastSuccessfulAt: state.lastSuccessfulAt ?? null,
       lastError: state.lastError ?? null,
+      consecutiveErrors: state.consecutiveErrors ?? 0,
+      nextRetryAtMs: state.nextRetryAtMs ?? null,
       completed: Boolean(state.completed),
     };
   }
@@ -631,6 +633,12 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
               message: err?.message ?? "Historical account import failed.",
               at: new Date(nowFn()).toISOString(),
             },
+            consecutiveErrors: (priorState.consecutiveErrors ?? 0) + 1,
+            nextRetryAtMs: nowFn() + (
+              Number.isFinite(err?.retryAfterMs) && err.retryAfterMs > 0
+                ? Math.min(300_000, err.retryAfterMs)
+                : Math.min(60_000, 2_000 * 2 ** Math.min(5, priorState.consecutiveErrors ?? 0))
+            ),
             updatedAt: new Date(nowFn()).toISOString(),
           }
         : null;
