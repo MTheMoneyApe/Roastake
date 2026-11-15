@@ -494,6 +494,90 @@ export function createBlockSource(config, deps = {}) {
   }
 
   /**
+   * Fetch a historical transaction once and verify the canonical block header for the
+   * transaction plus every Perps-executed receipt. Receipt logs can be emitted in later
+   * blocks than the originating transaction, so each receipt keeps its own block metadata.
+   */
+  async function fetchAccountHistoryTxWithBlocks(txHash, senderAccountId) {
+    const validSender = assertTestnetAccountId(senderAccountId, "historical transaction signer");
+    const historicalRpcEndpoints = [...rpcEndpoints, ...archivalEndpoints];
+    const txStatus = await callRpcWithFailover(
+      "EXPERIMENTAL_tx_status",
+      {
+        tx_hash: txHash,
+        sender_account_id: validSender,
+        wait_until: "FINAL",
+      },
+      historicalRpcEndpoints,
+    );
+
+    if (txStatus?.final_execution_status !== "FINAL" ||
+        txStatus?.transaction?.hash !== txHash ||
+        txStatus?.transaction?.signer_id !== validSender) {
+      throw new BlockSourceError(
+        `RPC final transaction identity/finality check failed for ${txHash}.`,
+        "BACKFILL_INCOMPLETE",
+        { retryable: true },
+      );
+    }
+
+    const txBlockHash = txStatus?.transaction_outcome?.block_hash ?? null;
+    const perpsReceiptBlockHashes = (txStatus?.receipts_outcome ?? [])
+      .filter((receipt) => receipt?.outcome?.executor_id === config.contractId)
+      .map((receipt) => receipt?.block_hash)
+      .filter((hash) => typeof hash === "string" && hash.length > 0);
+    const blockHashes = [...new Set([txBlockHash, ...perpsReceiptBlockHashes].filter(Boolean))];
+    if (blockHashes.length === 0) {
+      throw new BlockSourceError(
+        `Final transaction ${txHash} is missing transaction/Perps receipt block hashes.`,
+        "BACKFILL_INCOMPLETE",
+        { retryable: true },
+      );
+    }
+
+    const blockHeadersByHash = {};
+    for (const blockHash of blockHashes) {
+      const blockResult = await callRpcWithFailover(
+        "block",
+        { block_id: blockHash },
+        historicalRpcEndpoints,
+      );
+      const header = blockResult?.header;
+      if (!header || !Number.isSafeInteger(header.height) ||
+          !header.hash || header.hash !== blockHash) {
+        throw new BlockSourceError(
+          `RPC block lookup for ${blockHash} did not return its matching canonical header.`,
+          "BACKFILL_INCOMPLETE",
+          { retryable: true },
+        );
+      }
+      parseNanosecTimestampSec(header);
+      blockHeadersByHash[blockHash] = header;
+    }
+
+    const txBlockHeader = txBlockHash ? blockHeadersByHash[txBlockHash] : null;
+    if (!txBlockHeader) {
+      throw new BlockSourceError(
+        `Historical transaction ${txHash} has no verified transaction block header.`,
+        "BACKFILL_INCOMPLETE",
+        { retryable: true },
+      );
+    }
+    const firstPerpsReceipt = (txStatus.receipts_outcome ?? [])
+      .find((receipt) => receipt?.outcome?.executor_id === config.contractId);
+    const blockHeader = firstPerpsReceipt?.block_hash
+      ? blockHeadersByHash[firstPerpsReceipt.block_hash]
+      : txBlockHeader;
+
+    return {
+      txStatus,
+      blockHeader,
+      txBlockHeader,
+      blockHeadersByHash,
+    };
+  }
+
+  /**
    * Explicitly check whether an archival RPC node is reachable AND retains an exact pruned block.
    * Never silently skips heights if unavailable.
    */
@@ -522,6 +606,7 @@ export function createBlockSource(config, deps = {}) {
     fetchLastFinalizedHeight,
     fetchFinalizedBlock,
     fetchBackfillTxWithBlock,
+    fetchAccountHistoryTxWithBlocks,
     fetchAccountTransactionPage,
     fetchTransactionsByHash,
     verifyArchivalBlockAvailability,
