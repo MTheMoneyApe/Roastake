@@ -281,6 +281,26 @@ export async function importAccountHistoryBackfill({
     }
   }
 
+  if (!state.completed && state.pendingRows.length > 0 &&
+      state.pendingIndex >= state.pendingRows.length) {
+    const nextToken = state.nextResumeToken;
+    if (nextToken && nextToken === state.resumeToken) {
+      throw new Error("FastNear returned a repeated resume_token; refusing an infinite pagination loop.");
+    }
+    state = {
+      ...state,
+      resumeToken: nextToken,
+      nextResumeToken: null,
+      pendingRows: [],
+      pendingIndex: 0,
+      pagesCompleted: state.pagesCompleted + 1,
+      completed: !nextToken,
+      updatedAt: new Date().toISOString(),
+      lastError: null,
+    };
+    persistState(primaryStore, state);
+  }
+
   return {
     skipped: false,
     completed: state.completed,
