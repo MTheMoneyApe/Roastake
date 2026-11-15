@@ -174,6 +174,8 @@ export async function importAccountHistoryBackfill({
           discoveredTransactions: state.discoveredTransactions + pendingRows.length,
           updatedAt: new Date().toISOString(),
           lastError: null,
+          consecutiveErrors: 0,
+          nextRetryAtMs: null,
         };
         persistState(primaryStore, state);
 
@@ -187,6 +189,9 @@ export async function importAccountHistoryBackfill({
             nextResumeToken: null,
             pagesCompleted: state.pagesCompleted + 1,
             completed: !page.resumeToken,
+            lastError: null,
+            consecutiveErrors: 0,
+            nextRetryAtMs: null,
             updatedAt: new Date().toISOString(),
           };
           persistState(primaryStore, state);
@@ -318,6 +323,8 @@ export async function importAccountHistoryBackfill({
       completed: !nextToken,
       updatedAt: new Date().toISOString(),
       lastError: null,
+      consecutiveErrors: 0,
+      nextRetryAtMs: null,
     };
     persistState(primaryStore, state);
   }
