@@ -218,10 +218,21 @@ export async function importAccountHistoryBackfill({
         throw new Error(`FastNear transaction lookup did not return requested hash ${txHash}.`);
       }
       const signerAccountId = assertTestnetAccountId(detail.signer_id, "historical transaction signer");
-      const { txStatus, blockHeader } = await blockSource.fetchBackfillTxWithBlock(
+      const {
+        txStatus,
+        blockHeader,
+        txBlockHeader,
+        blockHeadersByHash,
+      } = await blockSource.fetchAccountHistoryTxWithBlocks(
         txHash,
         signerAccountId,
       );
+
+      if (txBlockHeader?.height !== row.transactionBlockHeight) {
+        throw new Error(
+          `FastNear/RPC transaction block-height mismatch for ${txHash}: index=${row.transactionBlockHeight}, rpc=${txBlockHeader?.height ?? "missing"}.`,
+        );
+      }
 
       if (txStatus?.transaction?.hash !== txHash) {
         throw new Error(`RPC transaction hash mismatch for historical transaction ${txHash}.`);
@@ -243,6 +254,7 @@ export async function importAccountHistoryBackfill({
           txHash,
           txStatus,
           blockHeader,
+          blockHeadersByHash,
           contractId: config.contractId,
           marketId: pipeline.spec.marketId,
           minPriceE8: pipeline.spec.minPriceE8,
