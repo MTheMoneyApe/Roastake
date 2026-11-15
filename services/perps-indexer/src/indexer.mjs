@@ -367,7 +367,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
         backfillBlockRange: progress.blockHeights.length
           ? { minHeight: Math.min(...progress.blockHeights), maxHeight: Math.max(...progress.blockHeights) }
           : cursor.backfillBlockRange ?? null,
-        backfillCompleted: progress.processedTxHashes.length >= spec.backfillTransactions.length,
+        backfillCompleted: progress.verifiedHashes.length >= spec.backfillTransactions.length,
         rejectedCount: (cursor.rejectedCount ?? 0) + progress.rejected.length,
         rejectionsByReason,
         });
@@ -478,7 +478,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
                 : `Temporary tip propagation 404 at finalized block #${h} (attempt ${prevAttempts + 1}/${config.maxTransient404Retries}).`,
             );
             tempErr.code = archival.available ? "UPSTREAM_TEMP_BLOCK_404" : "TEMP_TIP_BLOCK_404";
-            const delayMs = applyProviderErrorState(pipeline, tempErr);
+            const delayMs = applyProviderErrorState(pipeline, tempErr, { global: false });
             return {
               skipped: false,
               processedBlocks,
