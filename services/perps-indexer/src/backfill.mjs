@@ -27,17 +27,26 @@ export async function importM046GBackfill({
   store,
   ignoredMarketIds = null,
   skipUnscopedProtocolEvents = false,
+  completedTxHashes = [],
+  verifiedTxHashes = [],
+  existingBlockHeights = [],
+  maxTransactions = Number.POSITIVE_INFINITY,
+  onTransaction = null,
 }) {
   const importedEvents = [];
   const rejected = [];
-  const verifiedHashes = [];
-  const blockHeights = [];
+  const verifiedHashes = [...new Set(verifiedTxHashes)];
+  const processedHashes = new Set(completedTxHashes);
+  const blockHeights = [...new Set(existingBlockHeights)];
+  let processedThisRun = 0;
   let minHeight = null;
   let maxHeight = null;
   const targetMarketId = marketSpec?.marketId ?? config.marketId;
   const backfillTransactions = marketSpec?.backfillTransactions ?? config.backfillTransactions;
 
   for (const ptr of backfillTransactions) {
+    if (processedHashes.has(ptr.txHash)) continue;
+    if (processedThisRun >= maxTransactions) break;
     const { txStatus, blockHeader } = await blockSource.fetchBackfillTxWithBlock(
       ptr.txHash,
       ptr.senderAccountId,
@@ -69,12 +78,27 @@ export async function importM046GBackfill({
       if (minHeight === null || blockHeader.height < minHeight) minHeight = blockHeader.height;
       if (maxHeight === null || blockHeader.height > maxHeight) maxHeight = blockHeader.height;
     }
+
+    processedHashes.add(ptr.txHash);
+    processedThisRun += 1;
+    if (typeof onTransaction === "function") {
+      await onTransaction({
+        txHash: ptr.txHash,
+        processedTxHashes: [...processedHashes],
+        verifiedHashes: [...verifiedHashes],
+        blockHeights: [...blockHeights],
+        rejected: [...parsed.rejected],
+      });
+    }
   }
 
   blockHeights.sort((a, b) => a - b);
 
   return {
     verifiedHashes,
+    processedTxHashes: [...processedHashes],
+    pending: processedHashes.size < backfillTransactions.length,
+    processedThisRun,
     blockHeights,
     importedCount: importedEvents.length,
     importedEvents,
