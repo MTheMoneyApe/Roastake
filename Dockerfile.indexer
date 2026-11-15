@@ -9,4 +9,4 @@ COPY package.json ./
 COPY services/perps-indexer/ ./services/perps-indexer/
 
 EXPOSE 8787
-CMD ["npm", "run", "start:indexer"]
+CMD ["node", "services/perps-indexer/src/indexer.mjs"]
