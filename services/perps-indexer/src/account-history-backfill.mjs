@@ -153,7 +153,7 @@ export async function importAccountHistoryBackfill({
           toHeight: state.toHeight,
           resumeToken: state.resumeToken,
           limit: PAGE_LIMIT,
-          filters: { is_receiver: true, is_success: true },
+          filters: { is_receiver: true, is_function_call: true, is_success: true },
         });
 
         const pendingRows = page.accountTransactions.map((row) => {
