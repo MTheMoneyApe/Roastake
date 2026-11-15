@@ -97,6 +97,10 @@ export async function importAccountHistoryBackfill({
     toHeight: finalHeight + 1,
   });
 
+  if (!initialCursor.accountHistoryBackfill) {
+    persistState(primaryStore, state);
+  }
+
   if (state.accountId !== accountId || state.fromHeight !== fromHeight) {
     throw new Error(
       "Persisted account-history backfill scope does not match current contract/from-height configuration; refusing to reset its checkpoint.",
@@ -145,10 +149,15 @@ export async function importAccountHistoryBackfill({
           filters: { is_receiver: true, is_success: true },
         });
 
-        const pendingRows = page.accountTransactions.map((row) => ({
-          transactionHash: row.transaction_hash,
-          transactionBlockHeight: row.tx_block_height,
-        }));
+        const pendingRows = page.accountTransactions.map((row) => {
+          if (row.tx_block_height < state.fromHeight || row.tx_block_height >= state.toHeight) {
+            throw new Error("FastNear returned a transaction outside the requested historical height range.");
+          }
+          return {
+            transactionHash: row.transaction_hash,
+            transactionBlockHeight: row.tx_block_height,
+          };
+        });
         state = {
           ...state,
           pendingRows,
