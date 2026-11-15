@@ -141,6 +141,7 @@ function buildMarketTelemetry(ctx, config) {
     forwardScanRange: coverage.forwardScanRange,
     backfillCompleted: coverage.backfillCompleted,
     backfillBlockRange: coverage.backfillBlockRange,
+    accountHistoryBackfill: runtime.accountHistoryBackfill ?? null,
     lastSuccessfulBlockAt:
       runtime.lastSuccessfulBlockAt ?? cursor?.lastSuccessfulBlockAt ?? cursor?.updatedAt ?? null,
     lastIndexedAt: runtime.lastIndexedAt ?? cursor?.updatedAt ?? null,
@@ -337,6 +338,7 @@ function handleMarketAction({ action, telemetry, urlObj, res, corsHeaders, confi
         feedClassification: telemetry.ctx.spec.feedClassification ?? "TESTNET_SANDBOX_FEED",
         isSynthetic: telemetry.ctx.spec.isSynthetic ?? true,
         sourceMode: "persistent_indexer",
+        accountHistoryBackfill: runtime.accountHistoryBackfill ?? null,
         provider: {
           name: "fastnear_neardata_testnet",
           finality: "FINAL",
