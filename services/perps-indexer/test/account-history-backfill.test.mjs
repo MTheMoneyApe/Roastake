@@ -116,9 +116,10 @@ describe("FastNear account-history backfill", () => {
           return { transaction: { hash, signer_id: row.signer } };
         });
       },
-      async fetchBackfillTxWithBlock(hash, signer) {
+      async fetchAccountHistoryTxWithBlocks(hash, signer) {
         rpcVerified.push({ hash, signer });
         const row = txRows.find((candidate) => candidate.transactionHash === hash);
+        const receiptHash = `ReceiptBlock-${hash}`;
         return {
           txStatus: {
             final_execution_status: "FINAL",
@@ -126,7 +127,7 @@ describe("FastNear account-history backfill", () => {
             status: { SuccessReceiptId: `receipt-${hash}` },
             receipts_outcome: [{
               id: `receipt-${hash}`,
-              block_hash: `Block-${row.height}`,
+              block_hash: receiptHash,
               outcome: {
                 executor_id: PERPS_CONTRACT_ID,
                 status: { SuccessValue: "" },
@@ -136,8 +137,20 @@ describe("FastNear account-history backfill", () => {
           },
           blockHeader: {
             height: row.height,
-            hash: `Block-${row.height}`,
+            hash: `TxBlock-${hash}`,
             timestamp_nanosec: "1794383000000000000",
+          },
+          txBlockHeader: {
+            height: row.height,
+            hash: `TxBlock-${hash}`,
+            timestamp_nanosec: "1794383000000000000",
+          },
+          blockHeadersByHash: {
+            [receiptHash]: {
+              height: row.height + 1,
+              hash: receiptHash,
+              timestamp_nanosec: "1794383001000000000",
+            },
           },
         };
       },
@@ -173,6 +186,9 @@ describe("FastNear account-history backfill", () => {
     assert.equal(arabicaStore.events[0].data.sequence, 100);
     assert.equal(robustaStore.events[0].data.sequence, 101);
     assert.equal(geshaStore.events[0].data.sequence, 102);
+    assert.equal(arabicaStore.events[0].blockHeight, txRows[0].height + 1);
+    assert.equal(robustaStore.events[0].blockHeight, txRows[1].height + 1);
+    assert.equal(geshaStore.events[0].blockHeight, txRows[2].height + 1);
 
     const persistedCursor = primaryStore.getCursor();
     assert.equal(persistedCursor.accountHistoryBackfill.completed, true);
@@ -201,7 +217,7 @@ describe("FastNear account-history backfill", () => {
         detailCalls += 1;
         return [{ transaction: { hash: row.transaction_hash, signer_id: "roastake-dev-mta.testnet" } }];
       },
-      async fetchBackfillTxWithBlock() {
+      async fetchAccountHistoryTxWithBlocks() {
         rpcCalls += 1;
         if (fail) throw new Error("archival RPC temporarily unavailable");
         return {
@@ -211,7 +227,9 @@ describe("FastNear account-history backfill", () => {
             status: { SuccessReceiptId: "receipt" },
             receipts_outcome: [],
           },
-          blockHeader: { height: 277180011, hash: "BlockRetry", timestamp_nanosec: "1794383000000000000" },
+          blockHeader: { height: 277180010, hash: "TxBlockRetry", timestamp_nanosec: "1794383000000000000" },
+          txBlockHeader: { height: 277180010, hash: "TxBlockRetry", timestamp_nanosec: "1794383000000000000" },
+          blockHeadersByHash: {},
         };
       },
     };
@@ -240,4 +258,61 @@ describe("FastNear account-history backfill", () => {
     assert.equal(detailCalls, 2);
     assert.equal(rpcCalls, 2);
   });
+  it("honours a persisted provider retry deadline without issuing upstream requests", async () => {
+    const futureRetryAt = Date.now() + 60_000;
+    const primaryStore = makeStore({
+      version: 2,
+      coverageStartHeight: 277802000,
+      indexedThroughHeight: 277802000,
+      scannedSegments: [{ startHeight: 277802000, endHeight: 277802000, source: "forward_scan" }],
+      accountHistoryBackfill: {
+        version: 1,
+        network: "testnet",
+        accountId: PERPS_CONTRACT_ID,
+        fromHeight: 277174473,
+        toHeight: 277802001,
+        resumeToken: null,
+        nextResumeToken: null,
+        pendingRows: [],
+        pendingIndex: 0,
+        pagesFetched: 0,
+        pagesCompleted: 0,
+        discoveredTransactions: 0,
+        processedTransactions: 0,
+        verifiedTransactions: 0,
+        importedEvents: 0,
+        duplicateEvents: 0,
+        rejectedCount: 0,
+        rejectionsByReason: {},
+        completed: false,
+        lastError: { code: "RATE_LIMIT", message: "slow down" },
+        consecutiveErrors: 2,
+        nextRetryAtMs: futureRetryAt,
+      },
+    });
+    let requests = 0;
+    const blockSource = {
+      async fetchAccountTransactionPage() { requests += 1; throw new Error("must respect retry window"); },
+      async fetchTransactionsByHash() { requests += 1; throw new Error("must respect retry window"); },
+      async fetchAccountHistoryTxWithBlocks() { requests += 1; throw new Error("must respect retry window"); },
+    };
+    const result = await importAccountHistoryBackfill({
+      config: {
+        accountHistoryBackfillEnabled: true,
+        accountHistoryBackfillFromHeight: 277174473,
+        fastnearApiKey: "test-only-key",
+        contractId: PERPS_CONTRACT_ID,
+      },
+      blockSource,
+      primaryStore,
+      marketPipelines: [],
+      finalHeight: 277802000,
+      maxTransactions: 3,
+    });
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "retry_backoff");
+    assert.equal(result.retryAt, futureRetryAt);
+    assert.equal(requests, 0);
+  });
+
 });
