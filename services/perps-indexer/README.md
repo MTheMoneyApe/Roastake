@@ -57,7 +57,7 @@ Set the public API URL in the frontend build as `VITE_PERPS_HISTORY_API_URL`. Ne
 
 ## Historical event recovery
 
-When `FASTNEAR_API_KEY` is configured, the indexer can page Testnet account history for the Perps contract from `PERPS_INDEXER_ACCOUNT_HISTORY_FROM_HEIGHT`. Each discovered transaction is fetched by hash from FastNear, then independently checked using finalized NEAR RPC transaction status before its contract receipts are parsed and appended to the per-market stores. Pagination and per-transaction progress are checkpointed in the existing persistent volume, so interrupted runs can resume safely.
+When `FASTNEAR_API_KEY` is configured, the indexer can page Testnet account history for function-call transactions received by the Perps contract from `PERPS_INDEXER_ACCOUNT_HISTORY_FROM_HEIGHT`. Each discovered transaction is fetched by hash from FastNear, then independently checked using finalized NEAR RPC transaction status before its contract receipts are parsed and appended to the per-market stores. Pagination and per-transaction progress are checkpointed in the existing persistent volume, so interrupted runs can resume safely.
 
 This recovers verified contract events; it does **not** mark the intervening blocks as scanned. The API continues to report transaction-history recovery progress separately from contiguous block coverage. The existing forward scanner remains responsible for continuous block coverage.
 
