@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createPerpsIndexerService } from "../src/indexer.mjs";
-import { ARABICA_MARKET_ID, PERPS_CONTRACT_ID } from "../src/config.mjs";
+
 
 function makeBlock(height) {
   return {
