@@ -406,6 +406,13 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
 
   async function pollSinglePipeline(pipeline, finalHeight, fetchBlockCached) {
     const { spec, store, state, transient404Attempts, ignoredMarketIds } = pipeline;
+    if (nowFn() < (state.backoffUntilMs ?? 0)) {
+      return {
+        skipped: true,
+        reason: "market_backoff_active",
+        backoffRemainingMs: state.backoffUntilMs - nowFn(),
+      };
+    }
     let cursor = store.getCursor();
     if (!cursor) {
       cursor = await initializePipelineOnFirstBoot(pipeline, finalHeight, fetchBlockCached);
