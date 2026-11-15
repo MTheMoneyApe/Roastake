@@ -133,7 +133,9 @@ export function createHistoryStore(options) {
         // Legacy locks only contained a PID. In containerized deployments PIDs are
         // namespace-local, so a matching PID can be this new process, not the old owner.
         const legacyPidNamespaceCollision =
-          !existing?.ownerId && existing?.pid === process.pid;
+          !existing?.ownerId &&
+          existing?.pid === process.pid &&
+          lockAgeMs > LOCK_STALE_AFTER_MS;
         const ownerProcessAlive =
           Boolean(existing?.pid) && isProcessAlive(existing.pid);
         const stale =

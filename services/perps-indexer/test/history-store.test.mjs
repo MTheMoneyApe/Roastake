@@ -103,6 +103,20 @@ describe("perps-indexer durable JSONL store, deduplication, crash recovery & wri
     assert.equal(fs.existsSync(lockPath), false);
   });
 
+
+  it("does not reclaim a fresh legacy lock solely because its PID matches", () => {
+    const lockPath = path.join(tmpDir, "writer.lock");
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n",
+      "utf8",
+    );
+
+    const store = createHistoryStore({ dataDir: tmpDir });
+    assert.throws(() => store.open(), IndexerLockError);
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).pid, process.pid);
+  });
+
   it("does not reclaim a fresh lock owned by another instance even when the PID matches", () => {
     const lockPath = path.join(tmpDir, "writer.lock");
     fs.writeFileSync(
