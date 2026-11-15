@@ -46,6 +46,8 @@ function createInitialState({ accountId, fromHeight, toHeight }) {
     lastTransactionBlockHeight: null,
     lastSuccessfulAt: null,
     lastError: null,
+    consecutiveErrors: 0,
+    nextRetryAtMs: null,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -112,6 +114,9 @@ export async function importAccountHistoryBackfill({
   if (state.completed) {
     return { skipped: true, reason: "already_completed", state };
   }
+  if (Number.isFinite(state.nextRetryAtMs) && state.nextRetryAtMs > Date.now()) {
+    return { skipped: true, reason: "retry_backoff", retryAt: state.nextRetryAtMs, state };
+  }
 
   let processedThisRun = 0;
   let appendedThisRun = 0;
@@ -134,6 +139,8 @@ export async function importAccountHistoryBackfill({
           completed: !nextToken,
           updatedAt: new Date().toISOString(),
           lastError: null,
+          consecutiveErrors: 0,
+          nextRetryAtMs: null,
         };
         persistState(primaryStore, state);
         if (state.completed) break;
@@ -273,6 +280,8 @@ export async function importAccountHistoryBackfill({
         lastSuccessfulAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         lastError: null,
+        consecutiveErrors: 0,
+        nextRetryAtMs: null,
       };
       persistState(primaryStore, state);
       processedThisRun += 1;
