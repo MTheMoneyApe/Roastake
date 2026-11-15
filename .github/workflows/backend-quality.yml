@@ -5,6 +5,7 @@ on:
     branches:
       - hackathon-submission
       - feat/fastnear-account-history-backfill
+      - fix/fastnear-perps-function-call-filter
   workflow_dispatch:
 
 concurrency:
