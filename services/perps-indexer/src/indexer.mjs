@@ -8,6 +8,7 @@ import { createBlockSource, parseNanosecTimestampSec } from "./block-source.mjs"
 import { parseNearDataFinalBlock } from "./event-parser.mjs";
 import { createHistoryStore } from "./history-store.mjs";
 import { importM046GBackfill, reconcileHistoricalRange } from "./backfill.mjs";
+import { importAccountHistoryBackfill } from "./account-history-backfill.mjs";
 import { createIndexerHttpServer } from "./http-server.mjs";
 import {
   addScannedRangeToSegments,
@@ -53,6 +54,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
     pollingActive: false,
     upstreamBackoffUntilMs: 0,
     upstreamConsecutiveErrors: 0,
+    accountHistoryBackfill: null,
   };
 
   const blockSource =
@@ -186,6 +188,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       gapDetected: coverage.gapDetected,
       gapRange: coverage.gapRange,
       rejectedCount: state.rejectedCount,
+      accountHistoryBackfill: serviceState.accountHistoryBackfill,
     });
   }
 
@@ -560,6 +563,91 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
     };
   }
 
+  function publicAccountHistoryStatus(state) {
+    if (!state) {
+      return config.accountHistoryBackfillEnabled
+        ? { status: "initializing" }
+        : { status: "disabled", reason: "missing_api_key_or_disabled_by_configuration" };
+    }
+    return {
+      status: state.completed ? "complete" : state.lastError ? "retrying" : "running",
+      fromHeight: state.fromHeight ?? null,
+      toHeightExclusive: state.toHeight ?? null,
+      pagesFetched: state.pagesFetched ?? 0,
+      pagesCompleted: state.pagesCompleted ?? 0,
+      discoveredTransactions: state.discoveredTransactions ?? 0,
+      processedTransactions: state.processedTransactions ?? 0,
+      verifiedTransactions: state.verifiedTransactions ?? 0,
+      importedEvents: state.importedEvents ?? 0,
+      duplicateEvents: state.duplicateEvents ?? 0,
+      pendingPageTransactions: Math.max(
+        0,
+        (state.pendingRows?.length ?? 0) - (state.pendingIndex ?? 0),
+      ),
+      lastTransactionBlockHeight: state.lastTransactionBlockHeight ?? null,
+      lastSuccessfulAt: state.lastSuccessfulAt ?? null,
+      lastError: state.lastError ?? null,
+      completed: Boolean(state.completed),
+    };
+  }
+
+  async function attemptAccountHistoryBackfill(finalHeight) {
+    if (!config.accountHistoryBackfillEnabled) {
+      serviceState.accountHistoryBackfill = publicAccountHistoryStatus(null);
+      return serviceState.accountHistoryBackfill;
+    }
+    const primaryCursor = primaryPipeline.store.getCursor();
+    if (!primaryCursor) {
+      return publicAccountHistoryStatus(null);
+    }
+
+    try {
+      const result = await importAccountHistoryBackfill({
+        config,
+        blockSource,
+        primaryStore: primaryPipeline.store,
+        marketPipelines: pipelines,
+        finalHeight,
+        maxTransactions: config.accountHistoryBackfillTransactionsPerCycle,
+        shouldStop: () => serviceState.stopped,
+      });
+      serviceState.accountHistoryBackfill = publicAccountHistoryStatus(
+        result.state ?? primaryPipeline.store.getCursor()?.accountHistoryBackfill ?? null,
+      );
+      if (result.processedThisRun > 0) {
+        console.info(
+          `[perps-indexer:account-history] processed=${result.processedThisRun} verified=${result.verifiedThisRun} imported_events=${result.appendedThisRun} complete=${Boolean(result.completed)}`,
+        );
+      }
+      return serviceState.accountHistoryBackfill;
+    } catch (err) {
+      const latestCursor = primaryPipeline.store.getCursor();
+      const priorState = latestCursor?.accountHistoryBackfill ?? null;
+      const failedState = priorState
+        ? {
+            ...priorState,
+            lastError: {
+              code: err?.code ?? "ACCOUNT_HISTORY_BACKFILL_ERROR",
+              message: err?.message ?? "Historical account import failed.",
+              at: new Date(nowFn()).toISOString(),
+            },
+            updatedAt: new Date(nowFn()).toISOString(),
+          }
+        : null;
+      if (failedState && latestCursor) {
+        primaryPipeline.store.saveCursor({
+          ...latestCursor,
+          accountHistoryBackfill: failedState,
+        });
+      }
+      serviceState.accountHistoryBackfill = publicAccountHistoryStatus(failedState);
+      console.warn(
+        `[perps-indexer:account-history] deferred; forward scan remains active: ${err?.message ?? "unknown error"}`,
+      );
+      return serviceState.accountHistoryBackfill;
+    }
+  }
+
   async function pollOnce(options = {}) {
     if (serviceState.stopped || serviceState.pollingActive) {
       return {
@@ -621,6 +709,15 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
         }
       }
 
+      let accountHistoryBackfill = serviceState.accountHistoryBackfill;
+      if (
+        !options.market &&
+        activePipelines.length === pipelines.length &&
+        pipelines.every((pipeline) => pipeline.isStoreOpen())
+      ) {
+        accountHistoryBackfill = await attemptAccountHistoryBackfill(finalHeight);
+      }
+
       const primaryKey = options.market
         ? resolvePipeline(options.market).spec.slug
         : primaryPipeline.spec.slug;
@@ -629,6 +726,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       return {
         ...primaryResult,
         byMarket,
+        accountHistoryBackfill,
       };
     } catch (err) {
       const target = activePipelines[0] ?? primaryPipeline;
@@ -841,6 +939,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
             store: p.store,
             getRuntimeState: () => ({
               ...p.state,
+              accountHistoryBackfill: serviceState.accountHistoryBackfill,
               rateLimit: rateLimiter.getStats(),
             }),
           })),
