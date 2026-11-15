@@ -602,7 +602,10 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
             fetchBlockCached,
           );
         } catch (err) {
-          const delayMs = applyProviderErrorState(pipeline, err, { global: false });
+          const providerWideLimit = err?.code === "RATE_LIMIT" || err?.status === 429;
+          const delayMs = applyProviderErrorState(pipeline, err, {
+            global: providerWideLimit,
+          });
           console.error(
             `[perps-indexer:${pipeline.spec.slug}] Poll error #${pipeline.state.consecutiveErrors} (${pipeline.state.lastErrorCode}, backoff ${delayMs}ms): ${err?.message ?? "unknown error"}`,
           );
@@ -612,7 +615,8 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
             errorCode: pipeline.state.lastErrorCode,
             backoffMs: delayMs,
           };
-          // Market-local failures must not block healthy sibling markets.
+          // Provider-wide 429s pause all markets; market-local timeouts let siblings continue.
+          if (providerWideLimit) break;
           continue;
         }
       }
