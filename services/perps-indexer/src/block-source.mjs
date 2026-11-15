@@ -271,7 +271,9 @@ export function createBlockSource(config, deps = {}) {
       safeUrl,
       {
         method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
+        headers: buildAuthHeaders({
+          "content-type": "application/json",
+        }),
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: `roastake-indexer-${method}`,

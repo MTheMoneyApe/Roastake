@@ -67,11 +67,12 @@ describe("perps-indexer block-source & policy guards", () => {
     const config = loadIndexerConfig({
       rpcEndpoints: ["https://rpc.testnet.fastnear.com"],
       archivalRpcEndpoints: ["https://archival-rpc.testnet.near.org"],
+      fastnearApiKey: "secret-test-key",
     });
     const source = createBlockSource(config, {
       fetchFn: async (url, init) => {
         const body = JSON.parse(init.body);
-        requested.push({ url, method: body.method });
+        requested.push({ url, method: body.method, headers: init.headers });
         if (url.includes("rpc.testnet.fastnear.com")) {
           return new Response("temporarily unavailable", { status: 503 });
         }
@@ -109,6 +110,10 @@ describe("perps-indexer block-source & policy guards", () => {
       "block",
       "block",
     ]);
+    for (const request of requested) {
+      assert.equal(request.url.includes("secret-test-key"), false);
+      assert.equal(request.headers.authorization, "Bearer secret-test-key");
+    }
   });
 
   it("marks 429 rate limits & null blocks as retryable BlockSourceErrors, parses Retry-After, and rejects 404 gaps explicitly", async () => {
