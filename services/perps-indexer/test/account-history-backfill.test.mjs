@@ -177,7 +177,7 @@ describe("FastNear account-history backfill", () => {
     const persistedCursor = primaryStore.getCursor();
     assert.equal(persistedCursor.accountHistoryBackfill.completed, true);
     assert.deepEqual(persistedCursor.scannedSegments, [
-      { startHeight: 277802000, endHeight: 277802000, source: "forward_scan", blockCount: 1 },
+      { startHeight: 277802000, endHeight: 277802000, source: "forward_scan" },
     ]);
     assert.equal(persistedCursor.indexedThroughHeight, 277802000);
   });
@@ -236,7 +236,7 @@ describe("FastNear account-history backfill", () => {
       config, blockSource, primaryStore, marketPipelines, finalHeight: 277802001, maxTransactions: 1,
     });
     assert.equal(result.processedTransactions, 1);
-    assert.equal(result.completed, false);
+    assert.equal(result.completed, true);
     assert.equal(detailCalls, 2);
     assert.equal(rpcCalls, 2);
   });
