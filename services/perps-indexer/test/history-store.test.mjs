@@ -112,7 +112,7 @@ describe("perps-indexer durable JSONL store, deduplication, crash recovery & wri
       "utf8",
     );
 
-    const store = createHistoryStore({ dataDir: tmpDir });
+    const store = createHistoryStore({ dataDir: tmpDir, lockWaitMs: 0 });
     assert.throws(() => store.open(), IndexerLockError);
     assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).pid, process.pid);
   });
@@ -129,7 +129,7 @@ describe("perps-indexer durable JSONL store, deduplication, crash recovery & wri
       "utf8",
     );
 
-    const store = createHistoryStore({ dataDir: tmpDir });
+    const store = createHistoryStore({ dataDir: tmpDir, lockWaitMs: 0 });
     assert.throws(() => store.open(), IndexerLockError);
     assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).ownerId, "other-instance");
   });
