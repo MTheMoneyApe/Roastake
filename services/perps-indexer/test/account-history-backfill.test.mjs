@@ -271,6 +271,7 @@ describe("FastNear account-history backfill", () => {
         accountId: PERPS_CONTRACT_ID,
         fromHeight: 277174473,
         toHeight: 277802001,
+        filter: "is_receiver=true,is_function_call=true,is_success=true",
         resumeToken: null,
         nextResumeToken: null,
         pendingRows: [],
