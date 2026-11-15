@@ -1,6 +1,11 @@
 # ROASTAKE — Coffee Commodity Finance on NEAR
 
-**ROASTAKE is a coffee-finance prototype built on NEAR Protocol.** It connects a Testnet perpetuals engine and token swap with a longer-term vision for coffee supply-chain finance. The `hackathon-submission` branch is the current hackathon implementation and authoritative source for this release.
+**ROASTAKE — Coffee Commodity Finance on NEAR.** ROASTAKE is a modular coffee-finance prototype whose first executable on-chain product is a three-market coffee perpetuals engine on NEAR Testnet. The wider web experience explores adjacent workflows for coffee assets, traceability, swaps and coffee lifecycle operations, with each module's implementation status documented transparently. The `hackathon-submission` branch is the authoritative protocol/backend release for this submission.
+
+- **Live application:** https://roastake.vercel.app
+- **Protocol & backend (primary technical submission):** https://github.com/MTheMoneyApe/Roastake/tree/hackathon-submission
+- **Web frontend (companion repository):** https://github.com/MTheMoneyApe/Roastake-frontend/tree/hackathon-submission
+- **Architecture & product-to-code map:** [docs/SUBMISSION-ARCHITECTURE.md](docs/SUBMISSION-ARCHITECTURE.md)
 
 > **Evaluation scope:** NEAR Testnet only. Test USDC, coffee reference tokens and synthetic oracle prices have no monetary value. Perps uses operator-published reference prices, not live exchange prices. Physical coffee custody and commercial redemption are not verified.
 
@@ -71,6 +76,8 @@ Historical cycle accounting recorded `verify_solvency_invariant() = true`, zero 
 
 ## 5. Architecture
 
+The expanded product-to-code map, repository responsibilities and evaluation boundaries are documented in [docs/SUBMISSION-ARCHITECTURE.md](docs/SUBMISSION-ARCHITECTURE.md).
+
 ```mermaid
 flowchart LR
   Wallet[NEAR Testnet wallet] -->|signs| Perps[Perpetuals contract]
@@ -113,12 +120,12 @@ Stop with Ctrl+C. Each refresh signs Testnet transactions. Keep the helper runni
 
 ### Frontend
 
-Repository: [MTheMoneyApe/Roastake-frontend](https://github.com/MTheMoneyApe/Roastake-frontend)
+Repository: [MTheMoneyApe/Roastake-frontend](https://github.com/MTheMoneyApe/Roastake-frontend/tree/hackathon-submission) (`hackathon-submission` branch).
 
-- Current Preview branch: `feat/degen-mode-easter-egg`.
-- Preview: https://roastake-git-feat-degen-mode-easter-egg-astrym.vercel.app/
-- Production destination reserved for final release: https://roastake.vercel.app/
-- The Preview is not the production deployment.
+- **Live application:** https://roastake.vercel.app/
+- **Submission source:** [frontend source on GitHub](https://github.com/MTheMoneyApe/Roastake-frontend/tree/hackathon-submission)
+- **Architecture and module status:** [docs/SUBMISSION-ARCHITECTURE.md](docs/SUBMISSION-ARCHITECTURE.md)
+- This is the companion frontend repository. The present repository remains the primary protocol, contracts and backend submission.
 
 ## 7. Risk boundaries
 
