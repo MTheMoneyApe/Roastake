@@ -154,4 +154,77 @@ describe("perps-indexer block-source & policy guards", () => {
       (err) => err instanceof BlockSourceError && err.retryable === false && err.code === "BLOCK_NOT_FOUND",
     );
   });
+  it("verifies transaction and each contract receipt against its own finalized archival block", async () => {
+    const requested = [];
+    const config = loadIndexerConfig({
+      rpcEndpoints: ["https://rpc.testnet.fastnear.com"],
+      archivalRpcEndpoints: ["https://archival-rpc.testnet.near.org"],
+      fastnearApiKey: "secret-test-key",
+    });
+    const source = createBlockSource(config, {
+      fetchFn: async (url, init) => {
+        const body = JSON.parse(init.body);
+        requested.push({ url, method: body.method, params: body.params });
+        if (body.method === "EXPERIMENTAL_tx_status") {
+          return new Response(JSON.stringify({
+            result: {
+              final_execution_status: "FINAL",
+              transaction: {
+                hash: "HistoricalTx",
+                signer_id: "roastake-dev-mta.testnet",
+              },
+              transaction_outcome: { block_hash: "TransactionBlockHash" },
+              status: { SuccessReceiptId: "RootReceipt" },
+              receipts_outcome: [{
+                id: "PerpsReceipt",
+                block_hash: "ReceiptBlockHash",
+                outcome: {
+                  executor_id: "perps-v1.roastake-dev-mta.testnet",
+                  status: { SuccessValue: "" },
+                  logs: [],
+                },
+              }],
+            },
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        const hash = body.params.block_id;
+        const headers = {
+          TransactionBlockHash: {
+            height: 277180001,
+            hash: "TransactionBlockHash",
+            timestamp_nanosec: "1794383000000000000",
+          },
+          ReceiptBlockHash: {
+            height: 277180004,
+            hash: "ReceiptBlockHash",
+            timestamp_nanosec: "1794383004000000000",
+          },
+        };
+        return new Response(JSON.stringify({ result: { header: headers[hash] } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    const result = await source.fetchAccountHistoryTxWithBlocks(
+      "HistoricalTx",
+      "roastake-dev-mta.testnet",
+    );
+    assert.equal(result.txBlockHeader.height, 277180001);
+    assert.equal(result.blockHeader.height, 277180004);
+    assert.equal(result.blockHeadersByHash.ReceiptBlockHash.height, 277180004);
+    assert.deepEqual(requested.map((item) => item.method), [
+      "EXPERIMENTAL_tx_status",
+      "block",
+      "block",
+    ]);
+    assert.deepEqual(requested.slice(1).map((item) => item.params.block_id), [
+      "TransactionBlockHash",
+      "ReceiptBlockHash",
+    ]);
+    assert.ok(requested.every((item) => !item.url.includes("secret-test-key")));
+  });
+
+
 });
