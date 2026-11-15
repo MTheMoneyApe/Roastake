@@ -52,11 +52,11 @@ describe("perps-indexer durable JSONL store, deduplication, crash recovery & wri
   });
 
   it("persists JSONL, deduplicates eventId & oracle sequences, saves cursor, and prevents concurrent writers", () => {
-    const store1 = createHistoryStore({ dataDir: tmpDir });
+    const store1 = createHistoryStore({ dataDir: tmpDir, lockWaitMs: 0 });
     store1.open();
 
     // Concurrent writer lock check while store1 is open
-    const storeConcurrent = createHistoryStore({ dataDir: tmpDir });
+    const storeConcurrent = createHistoryStore({ dataDir: tmpDir, lockWaitMs: 0 });
     assert.throws(() => storeConcurrent.open(), IndexerLockError);
 
     const e1 = makeObsEvent(1, 1794368226, "Tx1");

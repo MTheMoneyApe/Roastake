@@ -95,8 +95,16 @@ export function createHistoryStore(options) {
   function acquireLock() {
     fs.mkdirSync(dataDir, { recursive: true });
     lockOwnerId = `${process.pid}:${randomUUID()}`;
+    const waitMs = Number.isSafeInteger(options.lockWaitMs)
+      ? Math.max(0, options.lockWaitMs)
+      : 90_000;
+    const retryMs = Number.isSafeInteger(options.lockRetryMs)
+      ? Math.max(50, options.lockRetryMs)
+      : 500;
+    const deadline = Date.now() + waitMs;
+    const waitCell = new Int32Array(new SharedArrayBuffer(4));
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    while (true) {
       try {
         const fd = fs.openSync(lockPath, "wx");
         try {
@@ -130,8 +138,8 @@ export function createHistoryStore(options) {
           // A fresh malformed/partially written lock is treated as active below.
         }
 
-        // Legacy locks only contained a PID. In containerized deployments PIDs are
-        // namespace-local, so a matching PID can be this new process, not the old owner.
+        // Legacy locks only contained a PID. Container PIDs are namespace-local;
+        // a matching PID is reclaimable only after its lease is stale.
         const legacyPidNamespaceCollision =
           !existing?.ownerId &&
           existing?.pid === process.pid &&
@@ -143,22 +151,30 @@ export function createHistoryStore(options) {
           legacyPidNamespaceCollision ||
           (Boolean(existing?.pid) && !ownerProcessAlive);
 
-        if (!stale) {
+        if (stale) {
+          try {
+            fs.unlinkSync(lockPath);
+          } catch (unlinkError) {
+            if (unlinkError?.code !== "ENOENT") {
+              throw new IndexerLockError(`Unable to clear stale lock at ${lockPath}.`);
+            }
+          }
+          continue;
+        }
+
+        if (Date.now() >= deadline) {
           throw new IndexerLockError(
-            `Another perps-indexer process (PID ${existing?.pid ?? "unknown"}) holds ${lockPath}. Concurrent writers are forbidden.`,
+            `Another perps-indexer process (PID ${existing?.pid ?? "unknown"}) still holds ${lockPath} after waiting ${waitMs}ms. Concurrent writers are forbidden.`,
           );
         }
 
-        // Only reclaim an old lease or a legacy PID-namespace collision. A fresh
-        // ownerId lock is protected by heartbeat and is never removed by PID alone.
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          throw new IndexerLockError(`Unable to clear stale lock at ${lockPath}.`);
-        }
+        // Railway can overlap process teardown briefly while a persistent volume
+        // is handed over. Wait for the previous owner's heartbeat to stop, then
+        // reclaim only after the lease is stale. This is synchronous and occurs
+        // before the HTTP server starts; the healthcheck budget covers the wait.
+        Atomics.wait(waitCell, 0, 0, Math.min(retryMs, Math.max(1, deadline - Date.now())));
       }
     }
-    throw new IndexerLockError(`Failed to acquire exclusive writer lock at ${lockPath}.`);
   }
 
   function loadAndRecoverEvents() {
