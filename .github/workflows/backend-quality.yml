@@ -32,4 +32,9 @@ jobs:
         run: node --check scripts/keep-prices-fresh.mjs
       - name: Run indexer test suite
         working-directory: services/perps-indexer
-        run: node --test test/*.test.mjs
+        run: |
+          for test_file in test/*.test.mjs; do
+            echo "::group::Testing $test_file"
+            timeout 90s node --test "$test_file"
+            echo "::endgroup::"
+          done
