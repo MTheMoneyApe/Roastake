@@ -102,6 +102,8 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       lastErrorMessage: null,
       lastErrorAt: null,
       rejectedCount: 0,
+      backfillRetryAtMs: 0,
+      backfillConsecutiveErrors: 0,
     };
 
     const transient404Attempts = new Map();
@@ -270,21 +272,8 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       skipUnscopedProtocolEvents: multiMarketMode,
     });
 
-    const backfill = await importM046GBackfill({
-      config,
-      marketSpec: spec,
-      blockSource,
-      store,
-      ignoredMarketIds: multiMarketMode ? ignoredMarketIds : null,
-      skipUnscopedProtocolEvents: multiMarketMode,
-    });
     const headAppend = store.appendEvents(parsedHead.events);
-
-    const allRejections = [
-      ...backfill.rejected,
-      ...parsedHead.rejected,
-      ...headAppend.duplicateRejections,
-    ];
+    const allRejections = [...parsedHead.rejected, ...headAppend.duplicateRejections];
     const rejectionsByReason = {};
     tallyRejections(rejectionsByReason, allRejections);
     const nowIso = new Date(nowFn()).toISOString();
@@ -306,13 +295,11 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       indexedThroughHeight: headHeight,
       indexedThroughHash: headBlock.block.header.hash,
       lastFinalizedHeight: headHeight,
-      backfillCompleted: backfill.verifiedHashes.length === spec.backfillTransactions.length,
-      backfillTxHashes: backfill.verifiedHashes,
-      backfillBlockHeights: backfill.blockHeights,
-      backfillBlockRange:
-        backfill.backfillMinHeight !== null
-          ? { minHeight: backfill.backfillMinHeight, maxHeight: backfill.backfillMaxHeight }
-          : null,
+      backfillCompleted: spec.backfillTransactions.length === 0,
+      backfillTxHashes: [],
+      backfillProcessedTxHashes: [],
+      backfillBlockHeights: [],
+      backfillBlockRange: null,
       scannedSegments: [
         { startHeight: headHeight, endHeight: headHeight, source: "forward_scan" },
       ],
@@ -327,17 +314,17 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
     return initialCursor;
   }
 
-  function applyProviderErrorState(pipeline, err) {
-    serviceState.upstreamConsecutiveErrors += 1;
+  function applyProviderErrorState(pipeline, err, { global = true } = {}) {
+    if (global) serviceState.upstreamConsecutiveErrors += 1;
     pipeline.state.consecutiveErrors += 1;
     const isRateLimit = err?.code === "RATE_LIMIT" || err?.status === 429;
     const delayMs = rateLimiter.recordRateLimit({
-      consecutiveErrors: serviceState.upstreamConsecutiveErrors,
+      consecutiveErrors: global ? serviceState.upstreamConsecutiveErrors : pipeline.state.consecutiveErrors,
       retryAfterMs: err?.retryAfterMs ?? null,
       isRateLimit,
     });
     const untilMs = nowFn() + delayMs;
-    serviceState.upstreamBackoffUntilMs = untilMs;
+    if (global) serviceState.upstreamBackoffUntilMs = untilMs;
     pipeline.state.backoffUntilMs = untilMs;
     if (!pipeline.state.gapDetected) {
       pipeline.state.providerStatus = "degraded";
@@ -354,29 +341,6 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
     let cursor = store.getCursor();
     if (!cursor) {
       cursor = await initializePipelineOnFirstBoot(pipeline, finalHeight, fetchBlockCached);
-    } else if (!cursor.backfillCompleted && spec.backfillTransactions.length > 0) {
-      const backfill = await importM046GBackfill({
-        config,
-        marketSpec: spec,
-        blockSource,
-        store,
-        ignoredMarketIds: multiMarketMode ? ignoredMarketIds : null,
-        skipUnscopedProtocolEvents: multiMarketMode,
-      });
-      const rejectionsByReason = { ...(cursor.rejectionsByReason ?? {}) };
-      tallyRejections(rejectionsByReason, backfill.rejected);
-      cursor = store.saveCursor({
-        ...cursor,
-        backfillCompleted: backfill.verifiedHashes.length === spec.backfillTransactions.length,
-        backfillTxHashes: backfill.verifiedHashes,
-        backfillBlockHeights: backfill.blockHeights,
-        backfillBlockRange:
-          backfill.backfillMinHeight !== null
-            ? { minHeight: backfill.backfillMinHeight, maxHeight: backfill.backfillMaxHeight }
-            : cursor.backfillBlockRange ?? null,
-        rejectedCount: (cursor.rejectedCount ?? 0) + backfill.rejected.length,
-        rejectionsByReason,
-      });
     }
 
     state.lastFinalizedHeight = finalHeight;
@@ -387,8 +351,10 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       serviceState.upstreamConsecutiveErrors = 0;
       if (!state.gapDetected) {
         state.providerStatus = "healthy";
-        state.lastErrorCode = null;
-        state.lastErrorMessage = null;
+        if (!String(state.lastErrorCode ?? "").startsWith("BACKFILL_")) {
+          state.lastErrorCode = null;
+          state.lastErrorMessage = null;
+        }
       }
       persistHealth(pipeline);
       return {
@@ -423,8 +389,10 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
         state.gapDetected = false;
         state.gapRange = null;
         state.providerStatus = "healthy";
-        state.lastErrorCode = null;
-        state.lastErrorMessage = null;
+        if (!String(state.lastErrorCode ?? "").startsWith("BACKFILL_")) {
+          state.lastErrorCode = null;
+          state.lastErrorMessage = null;
+        }
       } catch (err) {
         if (err?.code === "BLOCK_NOT_FOUND") {
           const archival = await blockSource.verifyArchivalBlockAvailability(h);
@@ -473,6 +441,69 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
           };
         }
         throw err;
+      }
+    }
+
+    if (
+      !cursor.backfillCompleted &&
+      spec.backfillTransactions.length > 0 &&
+      nowFn() >= (state.backfillRetryAtMs ?? 0) &&
+      !serviceState.stopped
+    ) {
+      try {
+        const backfill = await importM046GBackfill({
+          config,
+          marketSpec: spec,
+          blockSource,
+          store,
+          ignoredMarketIds: multiMarketMode ? ignoredMarketIds : null,
+          skipUnscopedProtocolEvents: multiMarketMode,
+          completedTxHashes: cursor.backfillProcessedTxHashes ?? cursor.backfillTxHashes ?? [],
+          verifiedTxHashes: cursor.backfillTxHashes ?? [],
+          existingBlockHeights: cursor.backfillBlockHeights ?? [],
+          maxTransactions: 1,
+          onTransaction: (progress) => {
+            const rejectionsByReason = { ...(cursor.rejectionsByReason ?? {}) };
+            tallyRejections(rejectionsByReason, progress.rejected);
+            cursor = store.saveCursor({
+              ...cursor,
+              backfillProcessedTxHashes: progress.processedTxHashes,
+              backfillTxHashes: progress.verifiedHashes,
+              backfillBlockHeights: progress.blockHeights,
+              backfillBlockRange: progress.blockHeights.length
+                ? { minHeight: Math.min(...progress.blockHeights), maxHeight: Math.max(...progress.blockHeights) }
+                : cursor.backfillBlockRange ?? null,
+              backfillCompleted: progress.processedTxHashes.length >= spec.backfillTransactions.length,
+              rejectedCount: (cursor.rejectedCount ?? 0) + progress.rejected.length,
+              rejectionsByReason,
+            });
+          },
+        });
+        cursor = store.saveCursor({
+          ...cursor,
+          backfillCompleted: !backfill.pending,
+          backfillProcessedTxHashes: backfill.processedTxHashes,
+          backfillTxHashes: backfill.verifiedHashes,
+          backfillBlockHeights: backfill.blockHeights,
+          backfillBlockRange: backfill.backfillMinHeight !== null
+            ? { minHeight: backfill.backfillMinHeight, maxHeight: backfill.backfillMaxHeight }
+            : cursor.backfillBlockRange ?? null,
+        });
+        state.backfillConsecutiveErrors = 0;
+        state.backfillRetryAtMs = 0;
+        if (cursor.backfillCompleted && String(state.lastErrorCode ?? "").startsWith("BACKFILL_")) {
+          state.lastErrorCode = null;
+          state.lastErrorMessage = null;
+          state.lastErrorAt = null;
+        }
+      } catch (backfillError) {
+        state.backfillConsecutiveErrors = (state.backfillConsecutiveErrors ?? 0) + 1;
+        const delayMs = Math.min(60_000, 1_500 * 2 ** Math.min(5, state.backfillConsecutiveErrors - 1));
+        state.backfillRetryAtMs = nowFn() + delayMs;
+        state.lastErrorCode = "BACKFILL_" + (backfillError?.code ?? "UPSTREAM_ERROR");
+        state.lastErrorMessage = backfillError?.message ?? "Historical seed backfill is pending retry.";
+        state.lastErrorAt = new Date(nowFn()).toISOString();
+        console.warn("[perps-indexer:" + spec.slug + "] Seed backfill deferred; forward scan remains active (" + state.lastErrorCode + ", retry in " + delayMs + "ms): " + state.lastErrorMessage);
       }
     }
 
@@ -528,7 +559,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
             fetchBlockCached,
           );
         } catch (err) {
-          const delayMs = applyProviderErrorState(pipeline, err);
+          const delayMs = applyProviderErrorState(pipeline, err, { global: false });
           console.error(
             `[perps-indexer:${pipeline.spec.slug}] Poll error #${pipeline.state.consecutiveErrors} (${pipeline.state.lastErrorCode}, backoff ${delayMs}ms): ${err?.message ?? "unknown error"}`,
           );
@@ -538,8 +569,8 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
             errorCode: pipeline.state.lastErrorCode,
             backoffMs: delayMs,
           };
-          // Stop advancing sibling pipelines during an upstream outage/rate-limit backoff window.
-          break;
+          // Market-local failures must not block healthy sibling markets.
+          continue;
         }
       }
 
