@@ -146,7 +146,13 @@ export function createHistoryStore(options) {
           lockAgeMs > LOCK_STALE_AFTER_MS;
         const ownerProcessAlive =
           Boolean(existing?.pid) && isProcessAlive(existing.pid);
+        const currentDeploymentId = process.env.RAILWAY_DEPLOYMENT_ID ?? null;
+        const previousRailwayDeployment =
+          Boolean(existing?.deploymentId) &&
+          Boolean(currentDeploymentId) &&
+          existing.deploymentId !== currentDeploymentId;
         const stale =
+          previousRailwayDeployment ||
           lockAgeMs > LOCK_STALE_AFTER_MS ||
           legacyPidNamespaceCollision ||
           (Boolean(existing?.pid) && !ownerProcessAlive);

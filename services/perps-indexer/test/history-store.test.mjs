@@ -104,6 +104,36 @@ describe("perps-indexer durable JSONL store, deduplication, crash recovery & wri
   });
 
 
+
+  it("reclaims a writer lock from a previous Railway deployment after volume handoff", () => {
+    const lockPath = path.join(tmpDir, "writer.lock");
+    const previous = process.env.RAILWAY_DEPLOYMENT_ID;
+    process.env.RAILWAY_DEPLOYMENT_ID = "current-deployment";
+    try {
+      fs.writeFileSync(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          ownerId: "previous-owner",
+          deploymentId: "previous-deployment",
+          startedAt: new Date().toISOString(),
+        }) + "\n",
+        "utf8",
+      );
+
+      const store = createHistoryStore({ dataDir: tmpDir, lockWaitMs: 0 });
+      assert.doesNotThrow(() => store.open());
+      assert.equal(
+        JSON.parse(fs.readFileSync(lockPath, "utf8")).deploymentId,
+        "current-deployment",
+      );
+      store.close();
+    } finally {
+      if (previous === undefined) delete process.env.RAILWAY_DEPLOYMENT_ID;
+      else process.env.RAILWAY_DEPLOYMENT_ID = previous;
+    }
+  });
+
   it("does not reclaim a fresh legacy lock solely because its PID matches", () => {
     const lockPath = path.join(tmpDir, "writer.lock");
     fs.writeFileSync(
