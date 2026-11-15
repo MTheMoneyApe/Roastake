@@ -61,6 +61,56 @@ describe("perps-indexer block-source & policy guards", () => {
     assert.equal(extractHeightFromRedirectLocation("/v0/block/277185500"), 277185500);
   });
 
+
+  it("falls back to an approved archival RPC for historical seed transactions", async () => {
+    const requested = [];
+    const config = loadIndexerConfig({
+      rpcEndpoints: ["https://rpc.testnet.fastnear.com"],
+      archivalRpcEndpoints: ["https://archival-rpc.testnet.near.org"],
+    });
+    const source = createBlockSource(config, {
+      fetchFn: async (url, init) => {
+        const body = JSON.parse(init.body);
+        requested.push({ url, method: body.method });
+        if (url.includes("rpc.testnet.fastnear.com")) {
+          return new Response("temporarily unavailable", { status: 503 });
+        }
+        if (body.method === "EXPERIMENTAL_tx_status") {
+          return new Response(JSON.stringify({
+            result: { transaction_outcome: { block_hash: "SeedBlockHash" }, receipts_outcome: [] },
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({
+          result: {
+            header: {
+              height: 277185500,
+              hash: "SeedBlockHash",
+              timestamp_nanosec: "1794383000000000000",
+            },
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+
+    const result = await source.fetchBackfillTxWithBlock(
+      "SeedTransactionHash",
+      "roastake-dev-mta.testnet",
+    );
+    assert.equal(result.blockHeader.height, 277185500);
+    assert.deepEqual(requested.map((x) => x.url), [
+      "https://rpc.testnet.fastnear.com",
+      "https://archival-rpc.testnet.near.org",
+      "https://rpc.testnet.fastnear.com",
+      "https://archival-rpc.testnet.near.org",
+    ]);
+    assert.deepEqual(requested.map((x) => x.method), [
+      "EXPERIMENTAL_tx_status",
+      "EXPERIMENTAL_tx_status",
+      "block",
+      "block",
+    ]);
+  });
+
   it("marks 429 rate limits & null blocks as retryable BlockSourceErrors, parses Retry-After, and rejects 404 gaps explicitly", async () => {
     const config = loadIndexerConfig();
     const rateLimited = createBlockSource(config, {

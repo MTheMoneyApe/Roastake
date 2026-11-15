@@ -323,11 +323,18 @@ export function createBlockSource(config, deps = {}) {
    */
   async function fetchBackfillTxWithBlock(txHash, senderAccountId) {
     const validSender = assertTestnetAccountId(senderAccountId, "backfill sender");
-    const txStatus = await callRpcWithFailover("EXPERIMENTAL_tx_status", {
-      tx_hash: txHash,
-      sender_account_id: validSender,
-      wait_until: "FINAL",
-    });
+    // Historical seed transactions may have fallen outside regular RPC retention.
+    // Try approved archival endpoints after regular RPC providers time out or prune data.
+    const historicalRpcEndpoints = [...rpcEndpoints, ...archivalEndpoints];
+    const txStatus = await callRpcWithFailover(
+      "EXPERIMENTAL_tx_status",
+      {
+        tx_hash: txHash,
+        sender_account_id: validSender,
+        wait_until: "FINAL",
+      },
+      historicalRpcEndpoints,
+    );
 
     const blockHash =
       txStatus?.receipts_outcome?.find((r) => r?.outcome?.executor_id === config.contractId)?.block_hash ??
@@ -339,7 +346,11 @@ export function createBlockSource(config, deps = {}) {
         "BACKFILL_INCOMPLETE",
       );
     }
-    const blockResult = await callRpcWithFailover("block", { block_id: blockHash });
+    const blockResult = await callRpcWithFailover(
+      "block",
+      { block_id: blockHash },
+      historicalRpcEndpoints,
+    );
     const header = blockResult?.header;
     if (!header || !Number.isSafeInteger(header.height) || !header.hash) {
       throw new BlockSourceError(
