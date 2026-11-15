@@ -39,7 +39,7 @@ describe("FastNear Testnet transaction-history API client", () => {
       fromHeight: 277174473,
       toHeight: 277802105,
       limit: 200,
-      filters: { is_receiver: true, is_success: true },
+      filters: { is_receiver: true, is_function_call: true, is_success: true },
     });
     assert.equal(page.accountTransactions[0].transaction_hash, "AccountHistoryHash");
     assert.equal(page.resumeToken, "opaque-token-123");
