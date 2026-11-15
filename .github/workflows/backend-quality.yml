@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: backend-quality-${{ github.ref }}
+  group: backend-quality-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:
