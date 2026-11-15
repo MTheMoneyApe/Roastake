@@ -85,6 +85,41 @@ describe("perps-indexer durable JSONL store, deduplication, crash recovery & wri
     store2.close();
   });
 
+
+  it("reclaims a legacy lock when its PID collides with the new container PID", () => {
+    const lockPath = path.join(tmpDir, "writer.lock");
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: process.pid, startedAt: "2026-11-14T00:00:00.000Z" }) + "\n",
+      "utf8",
+    );
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, old, old);
+
+    const store = createHistoryStore({ dataDir: tmpDir });
+    assert.doesNotThrow(() => store.open());
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).ownerId.startsWith(String(process.pid)), true);
+    store.close();
+    assert.equal(fs.existsSync(lockPath), false);
+  });
+
+  it("does not reclaim a fresh lock owned by another instance even when the PID matches", () => {
+    const lockPath = path.join(tmpDir, "writer.lock");
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        ownerId: "other-instance",
+        startedAt: new Date().toISOString(),
+      }) + "\n",
+      "utf8",
+    );
+
+    const store = createHistoryStore({ dataDir: tmpDir });
+    assert.throws(() => store.open(), IndexerLockError);
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).ownerId, "other-instance");
+  });
+
   it("truncates an incomplete corrupted trailing JSONL line during crash recovery without losing valid lines", () => {
     const store1 = createHistoryStore({ dataDir: tmpDir });
     store1.open();

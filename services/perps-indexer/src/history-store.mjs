@@ -2,6 +2,7 @@
 // Copyright © 2026 @MTheMoneyApe. All rights reserved.
 
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { extractScannedSegmentsFromCursor, normalizeBlockSegments } from "./coverage.mjs";
 
@@ -52,6 +53,8 @@ export function createHistoryStore(options) {
   const lockPath = path.join(dataDir, "writer.lock");
 
   let lockAcquired = false;
+  let lockHeartbeatTimer = null;
+  let lockOwnerId = null;
   let closed = false;
   let recoveredTruncatedBytes = 0;
 
@@ -64,15 +67,47 @@ export function createHistoryStore(options) {
   let cursor = null;
   let health = null;
 
+  const LOCK_STALE_AFTER_MS = 30_000;
+  const LOCK_HEARTBEAT_INTERVAL_MS = 5_000;
+
+  function startLockHeartbeat() {
+    if (lockHeartbeatTimer) clearInterval(lockHeartbeatTimer);
+    lockHeartbeatTimer = setInterval(() => {
+      try {
+        const existing = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+        if (existing.ownerId !== lockOwnerId) {
+          clearInterval(lockHeartbeatTimer);
+          lockHeartbeatTimer = null;
+          lockAcquired = false;
+          return;
+        }
+        const now = new Date();
+        fs.utimesSync(lockPath, now, now);
+      } catch {
+        if (lockHeartbeatTimer) clearInterval(lockHeartbeatTimer);
+        lockHeartbeatTimer = null;
+        lockAcquired = false;
+      }
+    }, LOCK_HEARTBEAT_INTERVAL_MS);
+    lockHeartbeatTimer.unref?.();
+  }
+
   function acquireLock() {
     fs.mkdirSync(dataDir, { recursive: true });
+    lockOwnerId = `${process.pid}:${randomUUID()}`;
+
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const fd = fs.openSync(lockPath, "wx");
         try {
           fs.writeFileSync(
             fd,
-            JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n",
+            JSON.stringify({
+              pid: process.pid,
+              ownerId: lockOwnerId,
+              deploymentId: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
+              startedAt: new Date().toISOString(),
+            }) + "\n",
             "utf8",
           );
           fs.fsyncSync(fd);
@@ -80,25 +115,44 @@ export function createHistoryStore(options) {
           fs.closeSync(fd);
         }
         lockAcquired = true;
+        startLockHeartbeat();
         return;
       } catch (err) {
         if (err?.code !== "EEXIST") throw err;
+
         let existing = null;
+        let lockAgeMs = 0;
         try {
+          const stat = fs.statSync(lockPath);
+          lockAgeMs = Math.max(0, Date.now() - stat.mtimeMs);
           existing = JSON.parse(fs.readFileSync(lockPath, "utf8"));
         } catch {
-          // Malformed or active partial lock file -> check below.
+          // A fresh malformed/partially written lock is treated as active below.
         }
-        if (existing?.pid && isProcessAlive(existing.pid)) {
+
+        // Legacy locks only contained a PID. In containerized deployments PIDs are
+        // namespace-local, so a matching PID can be this new process, not the old owner.
+        const legacyPidNamespaceCollision =
+          !existing?.ownerId && existing?.pid === process.pid;
+        const ownerProcessAlive =
+          Boolean(existing?.pid) && isProcessAlive(existing.pid);
+        const stale =
+          lockAgeMs > LOCK_STALE_AFTER_MS ||
+          legacyPidNamespaceCollision ||
+          (Boolean(existing?.pid) && !ownerProcessAlive);
+
+        if (!stale) {
           throw new IndexerLockError(
-            `Another perps-indexer process (PID ${existing.pid}) holds ${lockPath}. Concurrent writers are forbidden.`,
+            `Another perps-indexer process (PID ${existing?.pid ?? "unknown"}) holds ${lockPath}. Concurrent writers are forbidden.`,
           );
         }
-        // Stale lock left behind by a crashed dead PID: unlink safely once and retry.
+
+        // Only reclaim an old lease or a legacy PID-namespace collision. A fresh
+        // ownerId lock is protected by heartbeat and is never removed by PID alone.
         try {
           fs.unlinkSync(lockPath);
         } catch {
-          throw new IndexerLockError(`Unable to clear active lock at ${lockPath}.`);
+          throw new IndexerLockError(`Unable to clear stale lock at ${lockPath}.`);
         }
       }
     }
@@ -343,11 +397,18 @@ export function createHistoryStore(options) {
   function close() {
     if (closed) return;
     closed = true;
+    if (lockHeartbeatTimer) {
+      clearInterval(lockHeartbeatTimer);
+      lockHeartbeatTimer = null;
+    }
     if (lockAcquired && fs.existsSync(lockPath)) {
       try {
-        fs.unlinkSync(lockPath);
+        const existing = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+        if (existing.ownerId === lockOwnerId) {
+          fs.unlinkSync(lockPath);
+        }
       } catch {
-        // Ignore cleanup failure during teardown.
+        // Ignore cleanup failure during teardown; never remove another owner's lock.
       }
     }
     lockAcquired = false;
