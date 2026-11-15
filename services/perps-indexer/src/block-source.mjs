@@ -133,6 +133,135 @@ export function createBlockSource(config, deps = {}) {
     }
   }
 
+  const fastNearTxBaseUrl = "https://tx.test.fastnear.com";
+
+  async function postFastNearTxApi(path, payload) {
+    if (!apiKey) {
+      throw new BlockSourceError(
+        "FASTNEAR_API_KEY is required for Testnet transaction-history backfill.",
+        "AUTH_ERROR",
+        { retryable: false },
+      );
+    }
+    const url = `${fastNearTxBaseUrl}${path}`;
+    const res = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: buildAuthHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify(payload),
+    }, { metered: false });
+
+    if (res.status === 429 || res.status >= 500) {
+      const retryAfterMs = parseRetryAfterMs(res.headers?.get?.("retry-after"));
+      throw new BlockSourceError(
+        `FastNear Transactions API temporary HTTP ${res.status} on ${path}`,
+        res.status === 429 ? "RATE_LIMIT" : "UPSTREAM_5XX",
+        { status: res.status, retryable: true, retryAfterMs },
+      );
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new BlockSourceError(
+        `FastNear Transactions API authentication rejected (HTTP ${res.status}). Check FASTNEAR_API_KEY on the server.`,
+        "AUTH_ERROR",
+        { status: res.status, retryable: false },
+      );
+    }
+    if (!res.ok) {
+      throw new BlockSourceError(
+        `FastNear Transactions API returned HTTP ${res.status} on ${path}`,
+        "UPSTREAM_ERROR",
+        { status: res.status, retryable: res.status >= 500 },
+      );
+    }
+    try {
+      return await res.json();
+    } catch {
+      throw new BlockSourceError(
+        `FastNear Transactions API returned invalid JSON on ${path}.`,
+        "INVALID_JSON",
+        { retryable: true },
+      );
+    }
+  }
+
+  async function fetchAccountTransactionPage({
+    accountId,
+    fromHeight,
+    toHeight,
+    resumeToken = null,
+    limit = 200,
+    filters = {},
+  }) {
+    const validAccountId = assertTestnetAccountId(accountId, "history account");
+    if (!Number.isSafeInteger(fromHeight) || fromHeight < 1 ||
+        !Number.isSafeInteger(toHeight) || toHeight <= fromHeight) {
+      throw new BlockSourceError("Invalid FastNear account-history block range.", "INVALID_RANGE");
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+      throw new BlockSourceError("FastNear account-history page limit must be 1..200.", "INVALID_LIMIT");
+    }
+    if (resumeToken !== null && typeof resumeToken !== "string") {
+      throw new BlockSourceError("FastNear resume_token must be an opaque string or null.", "INVALID_CURSOR");
+    }
+
+    const payload = {
+      account_id: validAccountId,
+      from_tx_block_height: fromHeight,
+      to_tx_block_height: toHeight,
+      desc: false,
+      limit,
+      ...filters,
+    };
+    if (resumeToken) payload.resume_token = resumeToken;
+    const result = await postFastNearTxApi("/v0/account", payload);
+    if (!result || !Array.isArray(result.account_txs)) {
+      throw new BlockSourceError(
+        "FastNear account-history response is missing account_txs[].",
+        "INVALID_RESPONSE",
+        { retryable: true },
+      );
+    }
+    if (result.resume_token !== undefined &&
+        result.resume_token !== null &&
+        typeof result.resume_token !== "string") {
+      throw new BlockSourceError(
+        "FastNear account-history response contains an invalid resume_token.",
+        "INVALID_RESPONSE",
+        { retryable: true },
+      );
+    }
+    for (const row of result.account_txs) {
+      if (!row || typeof row.transaction_hash !== "string" ||
+          !Number.isSafeInteger(row.tx_block_height)) {
+        throw new BlockSourceError(
+          "FastNear account-history response contains an invalid transaction row.",
+          "INVALID_RESPONSE",
+          { retryable: true },
+        );
+      }
+    }
+    return {
+      accountTransactions: result.account_txs,
+      resumeToken: result.resume_token ?? null,
+      totalTransactions: Number.isSafeInteger(result.txs_count) ? result.txs_count : null,
+    };
+  }
+
+  async function fetchTransactionsByHash(txHashes) {
+    if (!Array.isArray(txHashes) || txHashes.length < 1 || txHashes.length > 20 ||
+        txHashes.some((hash) => typeof hash !== "string" || !hash.trim())) {
+      throw new BlockSourceError("FastNear transaction lookup requires 1..20 non-empty hashes.", "INVALID_TX_HASHES");
+    }
+    const result = await postFastNearTxApi("/v0/transactions", { tx_hashes: txHashes });
+    if (!result || !Array.isArray(result.transactions)) {
+      throw new BlockSourceError(
+        "FastNear transaction lookup response is missing transactions[].",
+        "INVALID_RESPONSE",
+        { retryable: true },
+      );
+    }
+    return result.transactions;
+  }
+
   async function fetchLastFinalizedHeight() {
     const url = `${nearDataBase}/v0/last_block/final`;
     const res = await fetchWithTimeout(url, {
@@ -393,6 +522,8 @@ export function createBlockSource(config, deps = {}) {
     fetchLastFinalizedHeight,
     fetchFinalizedBlock,
     fetchBackfillTxWithBlock,
+    fetchAccountTransactionPage,
+    fetchTransactionsByHash,
     verifyArchivalBlockAvailability,
     callRpcWithFailover,
   };
