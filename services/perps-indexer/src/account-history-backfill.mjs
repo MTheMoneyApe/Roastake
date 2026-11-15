@@ -6,6 +6,7 @@ import { assertTestnetAccountId } from "./config.mjs";
 
 const PAGE_LIMIT = 200;
 const MAX_HASH_BATCH = 20;
+const ACCOUNT_HISTORY_FILTER = "is_receiver=true,is_function_call=true,is_success=true";
 
 function countRejections(target, rejections) {
   for (const rejection of rejections) {
@@ -27,7 +28,7 @@ function createInitialState({ accountId, fromHeight, toHeight }) {
     accountId,
     fromHeight,
     toHeight,
-    filter: "is_receiver=true,is_success=true",
+    filter: ACCOUNT_HISTORY_FILTER,
     resumeToken: null,
     nextResumeToken: null,
     pendingRows: [],
@@ -99,7 +100,27 @@ export async function importAccountHistoryBackfill({
     toHeight: finalHeight + 1,
   });
 
-  if (!initialCursor.accountHistoryBackfill) {
+  if (state.filter !== ACCOUNT_HISTORY_FILTER) {
+    const priorProgress = {
+      processedTransactions: state.processedTransactions ?? 0,
+      verifiedTransactions: state.verifiedTransactions ?? 0,
+      importedEvents: state.importedEvents ?? 0,
+      duplicateEvents: state.duplicateEvents ?? 0,
+      pagesFetched: state.pagesFetched ?? 0,
+    };
+    state = {
+      ...createInitialState({
+        accountId,
+        fromHeight,
+        toHeight: state.toHeight ?? finalHeight + 1,
+      }),
+      previousFilter: state.filter ?? null,
+      previousProgress,
+    };
+    // Rewind only the remote pagination checkpoint. Existing event JSONL files remain intact;
+    // replay is safe because HistoryStore deduplicates event IDs and oracle sequences.
+    persistState(primaryStore, state);
+  } else if (!initialCursor.accountHistoryBackfill) {
     persistState(primaryStore, state);
   }
 
