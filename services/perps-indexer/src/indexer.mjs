@@ -336,6 +336,74 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
     return delayMs;
   }
 
+  async function attemptSeedBackfill(pipeline, cursor) {
+    const { spec, store, state, ignoredMarketIds } = pipeline;
+  if (
+    !cursor.backfillCompleted &&
+    spec.backfillTransactions.length > 0 &&
+    nowFn() >= (state.backfillRetryAtMs ?? 0) &&
+    !serviceState.stopped
+    ) {
+    try {
+      const backfill = await importM046GBackfill({
+      config,
+      marketSpec: spec,
+      blockSource,
+      store,
+      ignoredMarketIds: multiMarketMode ? ignoredMarketIds : null,
+      skipUnscopedProtocolEvents: multiMarketMode,
+      completedTxHashes: cursor.backfillProcessedTxHashes ?? cursor.backfillTxHashes ?? [],
+      verifiedTxHashes: cursor.backfillTxHashes ?? [],
+      existingBlockHeights: cursor.backfillBlockHeights ?? [],
+      maxTransactions: 1,
+      onTransaction: (progress) => {
+        const rejectionsByReason = { ...(cursor.rejectionsByReason ?? {}) };
+        tallyRejections(rejectionsByReason, progress.rejected);
+        cursor = store.saveCursor({
+        ...cursor,
+        backfillProcessedTxHashes: progress.processedTxHashes,
+        backfillTxHashes: progress.verifiedHashes,
+        backfillBlockHeights: progress.blockHeights,
+        backfillBlockRange: progress.blockHeights.length
+          ? { minHeight: Math.min(...progress.blockHeights), maxHeight: Math.max(...progress.blockHeights) }
+          : cursor.backfillBlockRange ?? null,
+        backfillCompleted: progress.processedTxHashes.length >= spec.backfillTransactions.length,
+        rejectedCount: (cursor.rejectedCount ?? 0) + progress.rejected.length,
+        rejectionsByReason,
+        });
+      },
+      });
+      cursor = store.saveCursor({
+      ...cursor,
+      backfillCompleted: !backfill.pending,
+      backfillProcessedTxHashes: backfill.processedTxHashes,
+      backfillTxHashes: backfill.verifiedHashes,
+      backfillBlockHeights: backfill.blockHeights,
+      backfillBlockRange: backfill.backfillMinHeight !== null
+        ? { minHeight: backfill.backfillMinHeight, maxHeight: backfill.backfillMaxHeight }
+        : cursor.backfillBlockRange ?? null,
+      });
+      state.backfillConsecutiveErrors = 0;
+      state.backfillRetryAtMs = 0;
+    if (cursor.backfillCompleted && String(state.lastErrorCode ?? "").startsWith("BACKFILL_")) {
+      state.lastErrorCode = null;
+      state.lastErrorMessage = null;
+      state.lastErrorAt = null;
+      }
+    } catch (backfillError) {
+      state.backfillConsecutiveErrors = (state.backfillConsecutiveErrors ?? 0) + 1;
+      const delayMs = Math.min(60_000, 1_500 * 2 ** Math.min(5, state.backfillConsecutiveErrors - 1));
+      state.backfillRetryAtMs = nowFn() + delayMs;
+      state.lastErrorCode = "BACKFILL_" + (backfillError?.code ?? "UPSTREAM_ERROR");
+      state.lastErrorMessage = backfillError?.message ?? "Historical seed backfill is pending retry.";
+      state.lastErrorAt = new Date(nowFn()).toISOString();
+      console.warn("[perps-indexer:" + spec.slug + "] Seed backfill deferred; forward scan remains active (" + state.lastErrorCode + ", retry in " + delayMs + "ms): " + state.lastErrorMessage);
+    }
+    }
+
+    return cursor;
+  }
+
   async function pollSinglePipeline(pipeline, finalHeight, fetchBlockCached) {
     const { spec, store, state, transient404Attempts, ignoredMarketIds } = pipeline;
     let cursor = store.getCursor();
@@ -356,6 +424,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
           state.lastErrorMessage = null;
         }
       }
+      cursor = await attemptSeedBackfill(pipeline, cursor);
       persistHealth(pipeline);
       return {
         skipped: false,
@@ -444,68 +513,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       }
     }
 
-    if (
-      !cursor.backfillCompleted &&
-      spec.backfillTransactions.length > 0 &&
-      nowFn() >= (state.backfillRetryAtMs ?? 0) &&
-      !serviceState.stopped
-    ) {
-      try {
-        const backfill = await importM046GBackfill({
-          config,
-          marketSpec: spec,
-          blockSource,
-          store,
-          ignoredMarketIds: multiMarketMode ? ignoredMarketIds : null,
-          skipUnscopedProtocolEvents: multiMarketMode,
-          completedTxHashes: cursor.backfillProcessedTxHashes ?? cursor.backfillTxHashes ?? [],
-          verifiedTxHashes: cursor.backfillTxHashes ?? [],
-          existingBlockHeights: cursor.backfillBlockHeights ?? [],
-          maxTransactions: 1,
-          onTransaction: (progress) => {
-            const rejectionsByReason = { ...(cursor.rejectionsByReason ?? {}) };
-            tallyRejections(rejectionsByReason, progress.rejected);
-            cursor = store.saveCursor({
-              ...cursor,
-              backfillProcessedTxHashes: progress.processedTxHashes,
-              backfillTxHashes: progress.verifiedHashes,
-              backfillBlockHeights: progress.blockHeights,
-              backfillBlockRange: progress.blockHeights.length
-                ? { minHeight: Math.min(...progress.blockHeights), maxHeight: Math.max(...progress.blockHeights) }
-                : cursor.backfillBlockRange ?? null,
-              backfillCompleted: progress.processedTxHashes.length >= spec.backfillTransactions.length,
-              rejectedCount: (cursor.rejectedCount ?? 0) + progress.rejected.length,
-              rejectionsByReason,
-            });
-          },
-        });
-        cursor = store.saveCursor({
-          ...cursor,
-          backfillCompleted: !backfill.pending,
-          backfillProcessedTxHashes: backfill.processedTxHashes,
-          backfillTxHashes: backfill.verifiedHashes,
-          backfillBlockHeights: backfill.blockHeights,
-          backfillBlockRange: backfill.backfillMinHeight !== null
-            ? { minHeight: backfill.backfillMinHeight, maxHeight: backfill.backfillMaxHeight }
-            : cursor.backfillBlockRange ?? null,
-        });
-        state.backfillConsecutiveErrors = 0;
-        state.backfillRetryAtMs = 0;
-        if (cursor.backfillCompleted && String(state.lastErrorCode ?? "").startsWith("BACKFILL_")) {
-          state.lastErrorCode = null;
-          state.lastErrorMessage = null;
-          state.lastErrorAt = null;
-        }
-      } catch (backfillError) {
-        state.backfillConsecutiveErrors = (state.backfillConsecutiveErrors ?? 0) + 1;
-        const delayMs = Math.min(60_000, 1_500 * 2 ** Math.min(5, state.backfillConsecutiveErrors - 1));
-        state.backfillRetryAtMs = nowFn() + delayMs;
-        state.lastErrorCode = "BACKFILL_" + (backfillError?.code ?? "UPSTREAM_ERROR");
-        state.lastErrorMessage = backfillError?.message ?? "Historical seed backfill is pending retry.";
-        state.lastErrorAt = new Date(nowFn()).toISOString();
-        console.warn("[perps-indexer:" + spec.slug + "] Seed backfill deferred; forward scan remains active (" + state.lastErrorCode + ", retry in " + delayMs + "ms): " + state.lastErrorMessage);
-      }
-    }
+    cursor = await attemptSeedBackfill(pipeline, cursor);
 
     persistHealth(pipeline);
     return {
