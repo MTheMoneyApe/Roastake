@@ -315,4 +315,77 @@ describe("FastNear account-history backfill", () => {
     assert.equal(requests, 0);
   });
 
+  it("rewinds an incompatible old filter token without deleting events or changing block coverage", async () => {
+    const primaryStore = makeStore({
+      version: 2,
+      coverageStartHeight: 277802000,
+      indexedThroughHeight: 277802000,
+      scannedSegments: [{ startHeight: 277802000, endHeight: 277802000, source: "forward_scan" }],
+      accountHistoryBackfill: {
+        version: 1,
+        network: "testnet",
+        accountId: PERPS_CONTRACT_ID,
+        fromHeight: 277174473,
+        toHeight: 277802105,
+        filter: "is_receiver=true,is_success=true",
+        resumeToken: "legacy-filter-token",
+        nextResumeToken: "legacy-next-token",
+        pendingRows: [{ transactionHash: "old-filter-hash", transactionBlockHeight: 277180001 }],
+        pendingIndex: 1,
+        pagesFetched: 4,
+        pagesCompleted: 3,
+        discoveredTransactions: 600,
+        processedTransactions: 10,
+        verifiedTransactions: 10,
+        importedEvents: 2,
+        duplicateEvents: 0,
+        rejectedCount: 0,
+        rejectionsByReason: {},
+        completed: false,
+      },
+    });
+    let pageRequest = null;
+    const blockSource = {
+      async fetchAccountTransactionPage(args) {
+        pageRequest = args;
+        return { accountTransactions: [], resumeToken: null, totalTransactions: 0 };
+      },
+      async fetchTransactionsByHash() {
+        throw new Error("No old-filter transaction should be processed after reset.");
+      },
+      async fetchAccountHistoryTxWithBlocks() {
+        throw new Error("No transaction lookup is expected for an empty fresh page.");
+      },
+    };
+    const result = await importAccountHistoryBackfill({
+      config: {
+        accountHistoryBackfillEnabled: true,
+        accountHistoryBackfillFromHeight: 277174473,
+        fastnearApiKey: "test-only-key",
+        contractId: PERPS_CONTRACT_ID,
+      },
+      blockSource,
+      primaryStore,
+      marketPipelines: [],
+      finalHeight: 277802200,
+      maxTransactions: 3,
+    });
+
+    assert.equal(result.completed, true);
+    assert.equal(pageRequest.resumeToken, null);
+    assert.deepEqual(pageRequest.filters, {
+      is_receiver: true,
+      is_function_call: true,
+      is_success: true,
+    });
+    const cursor = primaryStore.getCursor();
+    assert.equal(cursor.accountHistoryBackfill.previousFilter, "is_receiver=true,is_success=true");
+    assert.equal(cursor.accountHistoryBackfill.previousProgress.importedEvents, 2);
+    assert.equal(cursor.accountHistoryBackfill.toHeight, 277802105);
+    assert.deepEqual(cursor.scannedSegments, [
+      { startHeight: 277802000, endHeight: 277802000, source: "forward_scan" },
+    ]);
+    assert.equal(cursor.indexedThroughHeight, 277802000);
+  });
+
 });
