@@ -115,7 +115,7 @@ export async function importAccountHistoryBackfill({
         toHeight: state.toHeight ?? finalHeight + 1,
       }),
       previousFilter: state.filter ?? null,
-      previousProgress,
+      previousProgress: priorProgress,
     };
     // Rewind only the remote pagination checkpoint. Existing event JSONL files remain intact;
     // replay is safe because HistoryStore deduplicates event IDs and oracle sequences.
