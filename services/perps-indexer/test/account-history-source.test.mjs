@@ -55,6 +55,7 @@ describe("FastNear Testnet transaction-history API client", () => {
     assert.equal(requests[0].body.from_tx_block_height, 277174473);
     assert.equal(requests[0].body.to_tx_block_height, 277802105);
     assert.equal(requests[0].body.is_receiver, true);
+    assert.equal(requests[0].body.is_function_call, true);
     assert.equal(requests[0].body.is_success, true);
     for (const request of requests) {
       assert.equal(request.init.headers.authorization, "Bearer secret-test-key");
