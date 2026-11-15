@@ -39,8 +39,8 @@ export async function importM046GBackfill({
   const processedHashes = new Set(completedTxHashes);
   const blockHeights = [...new Set(existingBlockHeights)];
   let processedThisRun = 0;
-  let minHeight = null;
-  let maxHeight = null;
+  let minHeight = blockHeights.length ? Math.min(...blockHeights) : null;
+  let maxHeight = blockHeights.length ? Math.max(...blockHeights) : null;
   const targetMarketId = marketSpec?.marketId ?? config.marketId;
   const backfillTransactions = marketSpec?.backfillTransactions ?? config.backfillTransactions;
 
@@ -97,7 +97,7 @@ export async function importM046GBackfill({
   return {
     verifiedHashes,
     processedTxHashes: [...processedHashes],
-    pending: processedHashes.size < backfillTransactions.length,
+    pending: verifiedHashes.length < backfillTransactions.length,
     processedThisRun,
     blockHeights,
     importedCount: importedEvents.length,
