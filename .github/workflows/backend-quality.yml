@@ -2,7 +2,9 @@ name: Backend quality
 
 on:
   push:
-    branches: [hackathon-submission]
+    branches:
+      - hackathon-submission
+      - feat/fastnear-account-history-backfill
   workflow_dispatch:
 
 concurrency:
