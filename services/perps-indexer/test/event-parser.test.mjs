@@ -218,4 +218,85 @@ describe("perps-indexer unified NEP-297 event parser", () => {
       ["failed_receipt", "wrong_market", "mainnet_or_invalid_account", "price_out_of_bounds"],
     );
   });
+  it("uses each finalized receipt block header rather than the parent transaction block", () => {
+    const parsed = parseRpcTxStatusBackfillOutcome({
+      txHash: "TxWithMultiBlockReceipts",
+      txStatus: {
+        final_execution_status: "FINAL",
+        status: { SuccessReceiptId: "RootReceipt" },
+        transaction: { hash: "TxWithMultiBlockReceipts" },
+        receipts_outcome: [
+          {
+            id: "ReceiptOne",
+            block_hash: "ReceiptBlockOne",
+            outcome: {
+              executor_id: PERPS_CONTRACT_ID,
+              status: { SuccessValue: "" },
+              logs: [makeTickEnvelope({ sequence: 20, observed_at_sec: 1794383000 })],
+            },
+          },
+          {
+            id: "ReceiptTwo",
+            block_hash: "ReceiptBlockTwo",
+            outcome: {
+              executor_id: PERPS_CONTRACT_ID,
+              status: { SuccessValue: "" },
+              logs: [makeTickEnvelope({ sequence: 21, observed_at_sec: 1794384000 })],
+            },
+          },
+        ],
+      },
+      blockHeader: {
+        height: 277180000,
+        hash: "TransactionBlock",
+        timestamp_nanosec: "1794382000000000000",
+      },
+      blockHeadersByHash: {
+        ReceiptBlockOne: {
+          height: 277180010,
+          hash: "ReceiptBlockOne",
+          timestamp_nanosec: "1794383005000000000",
+        },
+        ReceiptBlockTwo: {
+          height: 277180020,
+          hash: "ReceiptBlockTwo",
+          timestamp_nanosec: "1794384005000000000",
+        },
+      },
+    });
+
+    assert.equal(parsed.rejected.length, 0);
+    assert.equal(parsed.events.length, 2);
+    assert.deepEqual(parsed.events.map((event) => event.blockHeight), [277180010, 277180020]);
+    assert.deepEqual(parsed.events.map((event) => event.blockHash), ["ReceiptBlockOne", "ReceiptBlockTwo"]);
+    assert.deepEqual(parsed.events.map((event) => event.blockTimestamp), [1794383005, 1794384005]);
+  });
+
+  it("rejects account-history imports when a target receipt has no verified block header", () => {
+    const parsed = parseRpcTxStatusBackfillOutcome({
+      txHash: "TxMissingReceiptHeader",
+      txStatus: {
+        final_execution_status: "FINAL",
+        status: { SuccessReceiptId: "RootReceipt" },
+        receipts_outcome: [{
+          id: "ReceiptMissingHeader",
+          block_hash: "UnknownReceiptBlock",
+          outcome: {
+            executor_id: PERPS_CONTRACT_ID,
+            status: { SuccessValue: "" },
+            logs: [makeTickEnvelope({ sequence: 22 })],
+          },
+        }],
+      },
+      blockHeader: {
+        height: 277180000,
+        hash: "TransactionBlock",
+        timestamp_nanosec: "1794383000000000000",
+      },
+      blockHeadersByHash: {},
+    });
+    assert.equal(parsed.events.length, 0);
+    assert.equal(parsed.rejected[0].reason, "missing_receipt_block_header");
+  });
+
 });

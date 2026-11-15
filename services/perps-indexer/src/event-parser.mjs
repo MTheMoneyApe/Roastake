@@ -567,6 +567,7 @@ export function parseRpcTxStatusBackfillOutcome({
   txHash,
   txStatus,
   blockHeader,
+  blockHeadersByHash = null,
   contractId = PERPS_CONTRACT_ID,
   marketId = ARABICA_MARKET_ID,
   minPriceE8 = ARABICA_MIN_PRICE_E8,
@@ -613,6 +614,29 @@ export function parseRpcTxStatusBackfillOutcome({
   const blockTimestamp = parseNanosecTimestampSec(blockHeader);
   const receipts = Array.isArray(txStatus?.receipts_outcome) ? txStatus.receipts_outcome : [];
 
+  if (blockHeadersByHash) {
+    const missingHeaderReceipt = receipts.find((receipt) =>
+      receipt?.outcome?.executor_id === contractId &&
+      (
+        typeof receipt.block_hash !== "string" ||
+        !blockHeadersByHash[receipt.block_hash]
+      ),
+    );
+    if (missingHeaderReceipt) {
+      return {
+        events: [],
+        rejected: [{
+          reason: "missing_receipt_block_header",
+          detail: `Perps receipt ${missingHeaderReceipt.id ?? "unknown"} has no verified canonical block header.`,
+          txHash,
+          receiptId: missingHeaderReceipt.id ?? null,
+          blockHeight,
+          eventType: null,
+        }],
+      };
+    }
+  }
+
   if (receipts.some((r) => !isReceiptStatusSuccessful(r?.outcome?.status))) {
     return {
       events: [],
@@ -634,6 +658,12 @@ export function parseRpcTxStatusBackfillOutcome({
 
   for (const receipt of receipts) {
     if (receipt?.outcome?.executor_id !== contractId) continue;
+    const receiptBlockHeader = blockHeadersByHash
+      ? blockHeadersByHash[receipt.block_hash]
+      : blockHeader;
+    const receiptBlockHeight = receiptBlockHeader.height;
+    const receiptBlockHash = receiptBlockHeader.hash;
+    const receiptBlockTimestamp = parseNanosecTimestampSec(receiptBlockHeader);
     const parsed = parseLogsForReceipt({
       logs: receipt.outcome.logs,
       status: receipt.outcome.status,
@@ -642,9 +672,9 @@ export function parseRpcTxStatusBackfillOutcome({
       txHash: txStatus?.transaction?.hash ?? txHash,
       // RPC EXPERIMENTAL_tx_status does not report shard_id; leave explicitly null rather than guessing.
       shardId: null,
-      blockHeight,
-      blockHash,
-      blockTimestamp,
+      blockHeight: receiptBlockHeight,
+      blockHash: receiptBlockHash,
+      blockTimestamp: receiptBlockTimestamp,
       source,
       targetContractId: contractId,
       targetMarketId: marketId,

@@ -36,7 +36,10 @@ node src/indexer.mjs
 | `HOST` | `0.0.0.0` | Bind address; use `0.0.0.0` on container hosts or localhost for local development |
 | `PORT` | `8787` | HTTP listen port; platform-injected `PORT` takes priority |
 | `CORS_ORIGIN` | Local development origins | Comma-separated exact frontend origins including scheme; wildcard rejected |
-| `FASTNEAR_API_KEY` | Empty | Optional server-only NEAR Data bearer key |
+| `FASTNEAR_API_KEY` | Empty | Server-only FastNear bearer key for NEAR Data and Transactions API history recovery |
+| `PERPS_INDEXER_ACCOUNT_HISTORY_BACKFILL` | Enabled when the key is present | Set `false` to disable transaction-history recovery |
+| `PERPS_INDEXER_ACCOUNT_HISTORY_FROM_HEIGHT` | `277174473` | Inclusive starting transaction block height for historical account recovery |
+| `PERPS_INDEXER_ACCOUNT_HISTORY_TXS_PER_CYCLE` | `3` | Maximum historical transactions independently verified per poll cycle (1–20) |
 | `INDEXER_DATA_DIR` | `data/perps-indexer` | Persistent writable directory; overrides legacy `PERPS_INDEXER_DATA_DIR` |
 | `PERPS_INDEXER_POLL_MS` | `2500` | Poll interval |
 
@@ -52,6 +55,12 @@ Set the public API URL in the frontend build as `VITE_PERPS_HISTORY_API_URL`. Ne
 
 **Persistence requirement:** mount a persistent disk at `INDEXER_DATA_DIR` (for example, `/data` on Railway). Legacy `PERPS_INDEXER_DATA_DIR` remains a lower-priority fallback. The indexer writes append-only JSONL events, cursors and health files. Ephemeral serverless filesystems are not a durable deployment target. Run a single writer per data directory because the store uses an exclusive process lock.
 
+## Historical event recovery
+
+When `FASTNEAR_API_KEY` is configured, the indexer can page Testnet account history for the Perps contract from `PERPS_INDEXER_ACCOUNT_HISTORY_FROM_HEIGHT`. Each discovered transaction is fetched by hash from FastNear, then independently checked using finalized NEAR RPC transaction status before its contract receipts are parsed and appended to the per-market stores. Pagination and per-transaction progress are checkpointed in the existing persistent volume, so interrupted runs can resume safely.
+
+This recovers verified contract events; it does **not** mark the intervening blocks as scanned. The API continues to report transaction-history recovery progress separately from contiguous block coverage. The existing forward scanner remains responsible for continuous block coverage.
+
 ## Coverage and security
 
-The indexer separates transaction-hash seed backfill from contiguous finalized-block scans and tracks gaps, lag, rejected events and provider backoff. It uses approved NEAR Testnet endpoints, accepts exact CORS origins only, rejects wildcard CORS and never receives wallet private keys. Restrict public access at the hosting layer if the API is not intended to be anonymous.
+The indexer separates transaction-hash seed backfill, FastNear account-history event recovery and contiguous finalized-block scans, and tracks gaps, lag, rejected events and provider backoff. It uses approved NEAR Testnet endpoints, accepts exact CORS origins only, rejects wildcard CORS and never receives wallet private keys. Restrict public access at the hosting layer if the API is not intended to be anonymous.

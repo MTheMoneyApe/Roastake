@@ -76,6 +76,8 @@ export const DEFAULT_MAX_RPM_AUTH = 600;
 export const DEFAULT_BLOCK_PACING_MS = 500;
 export const DEFAULT_NEAR_TIP_404_TOLERANCE_BLOCKS = 5;
 export const DEFAULT_MAX_TRANSIENT_404_RETRIES = 3;
+export const DEFAULT_ACCOUNT_HISTORY_BACKFILL_FROM_HEIGHT = 277174473;
+export const DEFAULT_ACCOUNT_HISTORY_BACKFILL_TXS_PER_CYCLE = 3;
 export const DEFAULT_HTTP_HOST = "0.0.0.0";
 export const DEFAULT_HTTP_PORT = 8787;
 export const DEFAULT_DATA_DIR = path.join(REPO_ROOT, "data", "perps-indexer");
@@ -342,6 +344,9 @@ export function loadIndexerConfig(overrides = {}, env = process.env) {
   const fastnearApiKey = typeof rawApiKey === "string" && rawApiKey.trim().length > 0
     ? rawApiKey.trim()
     : null;
+  const accountHistoryBackfillEnabled =
+    overrides.accountHistoryBackfillEnabled ??
+    (env.PERPS_INDEXER_ACCOUNT_HISTORY_BACKFILL !== "false" && Boolean(fastnearApiKey));
 
   const defaultMaxRpm = fastnearApiKey ? DEFAULT_MAX_RPM_AUTH : DEFAULT_MAX_RPM_UNAUTH;
   const maxRequestsPerMinute = parseIntEnv(
@@ -415,6 +420,19 @@ export function loadIndexerConfig(overrides = {}, env = process.env) {
     rpcEndpoints,
     archivalRpcEndpoints,
     fastnearApiKey,
+    accountHistoryBackfillEnabled,
+    accountHistoryBackfillFromHeight: parseIntEnv(
+      overrides.accountHistoryBackfillFromHeight ?? env.PERPS_INDEXER_ACCOUNT_HISTORY_FROM_HEIGHT,
+      DEFAULT_ACCOUNT_HISTORY_BACKFILL_FROM_HEIGHT,
+      1,
+      Number.MAX_SAFE_INTEGER - 1,
+    ),
+    accountHistoryBackfillTransactionsPerCycle: parseIntEnv(
+      overrides.accountHistoryBackfillTransactionsPerCycle ?? env.PERPS_INDEXER_ACCOUNT_HISTORY_TXS_PER_CYCLE,
+      DEFAULT_ACCOUNT_HISTORY_BACKFILL_TXS_PER_CYCLE,
+      1,
+      20,
+    ),
     dataDir: resolvedDataDir,
     pollIntervalMs: parseIntEnv(
       overrides.pollIntervalMs ?? env.PERPS_INDEXER_POLL_MS,
