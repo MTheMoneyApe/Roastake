@@ -419,6 +419,17 @@ fn parse_barchart_datetime_to_unix(raw: &str) -> Result<u64, String> {
         .ok_or_else(|| "invalid Barchart tradeTimestamp: missing date/time separator".to_string())?;
     let date = &normalized[..t_pos];
     let time_and_zone = &normalized[t_pos + 1..];
+    let date_bytes = date.as_bytes();
+    if date_bytes.len() != 10
+        || date_bytes[4] != b'-'
+        || date_bytes[7] != b'-'
+        || !date_bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    {
+        return Err("Barchart tradeTimestamp date must use strict YYYY-MM-DD format".to_string());
+    }
 
     let zone_pos = time_and_zone
         .char_indices()
@@ -431,7 +442,14 @@ fn parse_barchart_datetime_to_unix(raw: &str) -> Result<u64, String> {
     } else {
         return Err("Barchart tradeTimestamp must include an explicit UTC offset".to_string());
     };
-    let time_raw = time_raw.split('.').next().unwrap_or(time_raw);
+    let time_raw = if let Some((whole_seconds, fractional)) = time_raw.split_once('.') {
+        if fractional.is_empty() || !fractional.bytes().all(|b| b.is_ascii_digit()) {
+            return Err("Barchart tradeTimestamp has an invalid fractional second".to_string());
+        }
+        whole_seconds
+    } else {
+        time_raw
+    };
 
     let mut date_parts = date.split('-');
     let year: u64 = parse_component(date_parts.next(), "year")?;
@@ -662,6 +680,12 @@ mod tests {
         let error = fetch_barchart_quote(&client, CoffeeKind::Robusta, "RMF27", "test-key")
             .unwrap_err();
         assert!(error.contains("not real-time or delayed intraday"));
+    }
+
+    #[test]
+    fn timestamp_parser_rejects_malformed_calendar_width_and_fraction() {
+        assert!(parse_barchart_datetime_to_unix("20261113T17:29:00Z").is_err());
+        assert!(parse_barchart_datetime_to_unix("2026-11-13T17:29:00.xyzZ").is_err());
     }
 
     #[test]
