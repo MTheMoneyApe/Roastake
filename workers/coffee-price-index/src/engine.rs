@@ -1,12 +1,15 @@
 //! Core execution engine for the Coffee Price Index WASI worker.
 
+use crate::live_provider::fetch_live_index_price_now;
 use crate::provider::{FixtureProvider, ImfPcpsProvider, PriceProvider};
 #[cfg(feature = "wasi-http")]
 use crate::transport::WasiHttpTransport;
 use crate::transport::{HttpClient, HttpTransport, NetworkAllowlist};
 #[cfg(not(feature = "wasi-http"))]
 use crate::transport::{HttpRequest, HttpResponse, TransportError, ValidatedUrl};
-use roastake_shared::{WorkerInput, WorkerOutput, MODE_FIXTURE, MODE_PUBLIC_BENCHMARK};
+use roastake_shared::{
+    WorkerInput, WorkerOutput, MODE_FIXTURE, MODE_LIVE_INDEX, MODE_PUBLIC_BENCHMARK,
+};
 
 /// Native fallback transport that always fails closed when `wasi-http` is disabled.
 #[cfg(not(feature = "wasi-http"))]
@@ -65,11 +68,12 @@ pub fn process_request_with_transport<T: HttpTransport>(
             let provider = ImfPcpsProvider::new(&client);
             provider.fetch_price(&input.market)?
         }
+        MODE_LIVE_INDEX => {
+            let client = HttpClient::new(transport, allowlist.clone());
+            fetch_live_index_price_now(&client, &input)?
+        }
         other => {
-            return Err(format!(
-                "unsupported execution mode '{}'. Commercial live_index sources remain disabled until authorized",
-                other
-            ));
+            return Err(format!("unsupported execution mode '{}'", other));
         }
     };
 
@@ -175,10 +179,14 @@ mod tests {
     }
 
     #[test]
-    fn test_live_index_mode_fails_closed_without_fixture_fallback() {
+    fn test_live_index_rejects_unapproved_market_without_network_or_fixture_fallback() {
         let input = WorkerInput::new_live_index("ARABICA-REF/USD", 2, 3600, 500);
-        let err = process_request(input).unwrap_err();
-        assert!(err.contains("unsupported execution mode 'live_index'"));
+        let allowlist = NetworkAllowlist::from_embedded_manifest().unwrap();
+        let mock = MockHttpTransport::new();
+        let error = process_request_with_transport(input, &mock, &allowlist).unwrap_err();
+        assert!(error.contains("not an approved Testnet ICE coffee market"));
+        assert!(!error.contains("roastake-fixture"));
+        assert_eq!(mock.recorded_calls().len(), 0);
     }
 
     #[test]

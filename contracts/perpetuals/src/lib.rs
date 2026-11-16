@@ -1809,7 +1809,7 @@ impl PerpsContract {
                     oracle_contract, ..
                 } => (
                     format!("EXTERNAL_XCC:{oracle_contract}"),
-                    m.oracle_policy.allow_testnet_sandbox,
+                    false,
                     None,
                     None,
                     None,

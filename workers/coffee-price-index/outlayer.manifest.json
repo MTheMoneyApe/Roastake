@@ -1,7 +1,9 @@
 {
   "capabilities": {
     "network": [
-      "api.imf.org"
+      "api.imf.org",
+      "commodities-api.com",
+      "ondemand.websol.barchart.com"
     ]
   }
 }

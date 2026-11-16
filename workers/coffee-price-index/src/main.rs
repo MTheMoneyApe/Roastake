@@ -5,11 +5,12 @@
 //! emits single JSON response on stdout, and writes diagnostics to stderr.
 
 mod engine;
+mod live_provider;
 mod provider;
 mod transport;
 
 /// OutLayer manifest custom section compiled into the WASI binary and covered by its SHA-256.
-/// Pins only `{"capabilities":{"network":["api.imf.org"]}}` (no wildcards, no `connector_id`,
+/// Pins the IMF, Commodities-API and Barchart exact hosts (no wildcards, no `connector_id`,
 /// no `author_secrets`), preserving fail-closed outbound blocking for every other host.
 #[used]
 #[link_section = "outlayer.manifest"]

@@ -401,7 +401,8 @@ pub struct PriceObservation {
     pub unit: String,
     /// Source metadata tag (e.g. "roastake-fixture")
     pub source: String,
-    /// Number of independent sources contributing to the price
+    /// Number of distinct upstream vendor observations contributing to the price.
+    /// Multiple vendors may still distribute the same underlying exchange contract.
     pub source_count: u32,
     /// Observation timestamp from worker in epoch seconds (0 for synthetic fixture)
     pub observed_at_sec: u64,

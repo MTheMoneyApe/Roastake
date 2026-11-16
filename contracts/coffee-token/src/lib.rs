@@ -352,7 +352,10 @@ impl CoffeeAssetToken {
             "ERR_ACCOUNT_NOT_REGISTERED"
         );
         if let Some(requested) = amount {
-            assert_eq!(requested.0, 0, "The amount is greater than the available storage balance");
+            assert_eq!(
+                requested.0, 0,
+                "The amount is greater than the available storage balance"
+            );
         }
         StorageBalance {
             total: U128(STORAGE_BOUND_YOCTO),
@@ -493,7 +496,9 @@ impl CoffeeAssetToken {
                         .insert(&receiver_id, &(receiver_balance - refund));
                     self.balances.insert(
                         &sender_id,
-                        &sender_balance.checked_add(refund).expect("ERR_BALANCE_OVERFLOW"),
+                        &sender_balance
+                            .checked_add(refund)
+                            .expect("ERR_BALANCE_OVERFLOW"),
                     );
                     let refund_str = refund.to_string();
                     emit_nep141_event(
@@ -535,7 +540,10 @@ impl CoffeeAssetToken {
         amount: u128,
         memo: Option<&str>,
     ) {
-        assert_ne!(sender_id, receiver_id, "Sender and receiver should be different");
+        assert_ne!(
+            sender_id, receiver_id,
+            "Sender and receiver should be different"
+        );
         assert!(amount > 0, "The amount should be a positive number");
         let sender_balance = self
             .balances
@@ -678,7 +686,10 @@ mod tests {
                 max: U128(STORAGE_BOUND_YOCTO)
             }
         );
-        assert_eq!(contract.storage_balance_of(acct("majorblog5570.testnet")), None);
+        assert_eq!(
+            contract.storage_balance_of(acct("majorblog5570.testnet")),
+            None
+        );
 
         testing_env!(setup_ctx("roastake-dev-mta.testnet", STORAGE_BOUND_YOCTO).build());
         let sb = contract.storage_deposit(Some(acct("roastake-dev-mta.testnet")), Some(true));
@@ -750,9 +761,7 @@ mod tests {
             near_sdk::test_vm_config(),
             near_sdk::RuntimeFeesConfig::test(),
             Default::default(),
-            vec![near_sdk::PromiseResult::Successful(
-                b"\"4000000\"".to_vec()
-            )]
+            vec![near_sdk::PromiseResult::Successful(b"\"4000000\"".to_vec())]
         );
         let used = contract.ft_resolve_transfer(
             acct("roastake-dev-mta.testnet"),
@@ -785,7 +794,10 @@ mod tests {
             contract.get_reserve_registry(),
             Some(acct("registry.roastake-dev-mta.testnet"))
         );
-        assert_eq!(contract.get_minter(), acct("minter.roastake-dev-mta.testnet"));
+        assert_eq!(
+            contract.get_minter(),
+            acct("minter.roastake-dev-mta.testnet")
+        );
         assert!(!contract.is_physical_redemption_enabled());
     }
 }
