@@ -178,6 +178,17 @@ fn fetch_commodities_api_quote<T: HttpTransport>(
     if payload.get("base").and_then(Value::as_str) != Some("USD") {
         return Err("provider returned an unexpected base currency".to_string());
     }
+    // Commodities-API may deliberately return the last pre-expiry settlement for an
+    // expired future. A fresh API collection timestamp must never make that settlement
+    // look like a live quote for the expired contract.
+    if payload.get("expired").and_then(Value::as_bool) == Some(true)
+        || payload
+            .get("expired_at")
+            .map(|value| !value.is_null())
+            .unwrap_or(false)
+    {
+        return Err("provider marked the requested futures contract as expired".to_string());
+    }
     let observed_at_sec = payload
         .get("timestamp")
         .and_then(Value::as_u64)
@@ -535,7 +546,7 @@ fn parse_component(value: Option<&str>, field: &str) -> Result<u64, String> {
 }
 
 fn is_leap_year(year: u64) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 fn current_unix_time_sec() -> Result<u64, String> {
@@ -610,6 +621,22 @@ mod tests {
         assert_eq!(quote.source, "commodities-api:KCZ26");
         assert_eq!(quote.observed_at_sec, 1_793_512_806);
         assert!((632_000_000..=634_000_000).contains(&quote.price_usd_per_kg_e8));
+    }
+
+    #[test]
+    fn commodities_api_rejects_expired_contract_even_when_last_settlement_is_returned() {
+        use crate::transport::{MockHttpTransport, NetworkAllowlist};
+
+        let mock = MockHttpTransport::new();
+        mock.enqueue_ok_json(
+            200,
+            br#"{"success":true,"timestamp":1793512806,"base":"USD","expired":true,"expired_at":"2026-11-13","rates":{"KCZ26":0.0034825004353126}}"#.to_vec(),
+        );
+        let allowlist = NetworkAllowlist::from_hosts(&[COMMODITIES_API_HOST]).unwrap();
+        let client = HttpClient::new(&mock, allowlist);
+        let error = fetch_commodities_api_quote(&client, CoffeeKind::Arabica, "KCZ26", "test-key")
+            .unwrap_err();
+        assert!(error.contains("contract as expired"));
     }
 
     #[test]
