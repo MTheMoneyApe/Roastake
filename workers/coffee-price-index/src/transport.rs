@@ -1121,7 +1121,7 @@ mod tests {
     }
 
     #[test]
-    fn test_embedded_manifest_pins_exact_imf_host_only() {
+    fn test_embedded_manifest_pins_exact_approved_data_hosts() {
         assert_eq!(
             crate::OUTLAYER_MANIFEST.as_slice(),
             EMBEDDED_OUTLAYER_MANIFEST_JSON
@@ -1130,9 +1130,11 @@ mod tests {
         let allowlist = NetworkAllowlist::from_embedded_manifest()
             .expect("embedded outlayer.manifest.json must parse cleanly");
         assert!(!allowlist.is_empty());
-        assert_eq!(allowlist.len(), 1);
+        assert_eq!(allowlist.len(), 3);
         assert!(allowlist.allows("api.imf.org"));
         assert!(allowlist.allows("API.IMF.ORG"));
+        assert!(allowlist.allows("commodities-api.com"));
+        assert!(allowlist.allows("ondemand.websol.barchart.com"));
         assert!(!allowlist.allows("example.com"));
         assert!(!allowlist.allows("sub.api.imf.org"));
         assert!(!allowlist.allows("imf.org"));
@@ -1151,7 +1153,14 @@ mod tests {
         let net = val["capabilities"]["network"]
             .as_array()
             .expect("capabilities.network must be an array");
-        assert_eq!(net, &[serde_json::json!("api.imf.org")]);
+        assert_eq!(
+            net,
+            &[
+                serde_json::json!("api.imf.org"),
+                serde_json::json!("commodities-api.com"),
+                serde_json::json!("ondemand.websol.barchart.com")
+            ]
+        );
 
         // Reject missing network, null network, wildcards, connector_id, author_secrets
         for invalid in [
@@ -1286,10 +1295,22 @@ mod tests {
             }
         );
 
-        // Embedded allowlist permits only api.imf.org and denies every other host
+        // Embedded allowlist permits only the exact three documented upstream hosts.
         let embedded = NetworkAllowlist::from_embedded_manifest().unwrap();
         assert!(validate_request_url(
             "https://api.imf.org/external/sdmx/3.0/data/dataflow/IMF.RES/PCPS/+/G001.PCOFFOTM.USD.M?lastNObservations=1",
+            &embedded,
+            Some("test"),
+        )
+        .is_ok());
+        assert!(validate_request_url(
+            "https://commodities-api.com/api/latest?base=USD&symbols=COFFEE",
+            &embedded,
+            Some("test"),
+        )
+        .is_ok());
+        assert!(validate_request_url(
+            "https://ondemand.websol.barchart.com/getQuote.json?symbols=KC%2A0",
             &embedded,
             Some("test"),
         )
