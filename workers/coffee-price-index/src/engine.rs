@@ -180,10 +180,14 @@ mod tests {
     }
 
     #[test]
-    fn test_live_index_mode_fails_closed_without_fixture_fallback() {
+    fn test_live_index_rejects_unapproved_market_without_network_or_fixture_fallback() {
         let input = WorkerInput::new_live_index("ARABICA-REF/USD", 2, 3600, 500);
-        let err = process_request(input).unwrap_err();
-        assert!(err.contains("unsupported execution mode 'live_index'"));
+        let allowlist = NetworkAllowlist::from_embedded_manifest().unwrap();
+        let mock = MockHttpTransport::new();
+        let error = process_request_with_transport(input, &mock, &allowlist).unwrap_err();
+        assert!(error.contains("not an approved Testnet ICE coffee market"));
+        assert!(!error.contains("roastake-fixture"));
+        assert_eq!(mock.recorded_calls().len(), 0);
     }
 
     #[test]
