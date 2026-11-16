@@ -34,7 +34,7 @@ try {
     Write-Host "Scope: local tests/build only; this script does not upload or deploy."
 
     Invoke-Checked "cargo" @("fmt", "--all", "--", "--check")
-    Invoke-Checked "cargo" @("test", "-p", $packageName, "-p", "roastake-perpetuals")
+    Invoke-Checked "cargo" @("test", "-p", $packageName, "-p", "roastake-perpetuals", "-p", "roastake-oracle-adapter")
 
     $installedTargets = & rustup target list --installed
     if ($LASTEXITCODE -ne 0) {
