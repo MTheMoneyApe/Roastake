@@ -72,7 +72,7 @@ pub fn process_request_with_transport<T: HttpTransport>(
         }
         other => {
             return Err(format!(
-                "unsupported execution mode '{}'. Commercial live_index sources remain disabled until authorized",
+                "unsupported execution mode '{}'",
                 other
             ));
         }
