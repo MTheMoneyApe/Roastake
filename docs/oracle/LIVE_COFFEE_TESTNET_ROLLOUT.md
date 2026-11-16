@@ -15,14 +15,16 @@ Target flow:
 
 | ROASTAKE market family | Reference instrument | Provider symbols | Exchange quote unit | Normalized output |
 | --- | --- | --- | --- | --- |
-| Arabica | ICE Coffee C | Commodities-API `COFFEE`; Barchart `KC*0` | US cents/lb | USD/kg |
-| Robusta | ICE Robusta | Commodities-API `ROBUSTA`; Barchart `RM*0` (Barchart root maps to ICE contract RC) | USD/metric tonne | USD/kg |
+| Arabica | ICE Coffee C | Commodities-API and Barchart query the same explicit dated `KC...` contract | US cents/lb | USD/kg |
+| Robusta | ICE Robusta | Commodities-API and Barchart query the same explicit dated `RM...` contract (ICE exchange root RC) | USD/metric tonne | USD/kg |
 
 The ICE Coffee C contract is quoted in cents per pound. ICE Robusta is quoted in dollars per metric tonne. These must never share a unit conversion.
 
-Commodities-API documents `COFFEE` as an ICE Arabica futures price per pound (shown in US cents/lb) and `ROBUSTA` as an ICE Robusta futures price per tonne. With `base=USD`, its `rates.<symbol>` is the amount of commodity purchased by one USD; invert it to get the quote. Its `timestamp` is the provider's collection time. Subscription plans update the latest endpoint at 60m, 10m, or 60s, depending on tier.
+Commodities-API documents individual dated Arabica contracts such as `KCZ26` and Robusta contracts such as `RMF27`. Its `latest` endpoint accepts individual symbols. With `base=USD`, `rates.<symbol>` is the quantity of commodity bought by one USD; invert it to obtain the futures quote. Arabica is quoted in US cents/lb and Robusta in USD/tonne. The `timestamp` is the provider's collection time. Subscription plans update the latest endpoint at 60m, 10m, or 60s, depending on tier.
 
-Barchart OnDemand `getQuote` supports futures symbols using active-contract notation `<root>*0`; its response exposes `lastPrice`, `tradeTimestamp`, and `mode` (real-time, delayed, or end-of-day). The worker must reject end-of-day values for an intraday-configured market and must enforce freshness using the exchange trade timestamp, not the server response timestamp.
+Barchart OnDemand `getQuote` exposes `lastPrice`, `tradeTimestamp`, and `mode` (real-time, delayed, or end-of-day). The worker queries the exact same dated contract symbol at both vendors and rejects a response whose returned symbol differs, avoiding accidental comparison of different expiries. It rejects end-of-day mode and enforces freshness using the exchange trade timestamp, not the server response timestamp.
+
+The worker requires OutLayer Testnet environment settings `ARABICA_FUTURES_SYMBOL` and `ROBUSTA_FUTURES_SYMBOL`; there is intentionally no automatic front-month rollover. The operator must choose a liquid, non-expired contract and check first-notice / last-trade dates before configuring or rolling it.
 
 ICE product references:
 - Coffee C: https://www.ice.com/products/15/data
@@ -35,7 +37,7 @@ Provider documentation:
 
 ## Important aggregation semantics
 
-Two providers quoting the same ICE contract are two vendor observations, not two independent underlying markets. The output may use `LIVE_AGGREGATED` only to mean that more than one independently retrieved vendor observation participated in the calculation. UI and grant materials must not claim that this creates two independent exchange prices or independent market venues.
+Two vendors quoting the same dated ICE contract are two vendor observations, not two independent underlying markets. The output may use `LIVE_AGGREGATED` only to mean that more than one independently retrieved vendor observation participated in the calculation. UI and grant materials must not claim that this creates two independent exchange prices or independent market venues.
 
 For each market:
 1. Fetch every configured provider exactly once.
@@ -56,6 +58,8 @@ Store these only in OutLayer's encrypted secrets system, bound to the exact WASM
 
 - `COMMODITIES_API_KEY`
 - `BARCHART_API_KEY`
+- `ARABICA_FUTURES_SYMBOL` (explicit dated `KC...` ICE Coffee C symbol)
+- `ROBUSTA_FUTURES_SYMBOL` (explicit dated `RM...` ICE Robusta symbol)
 
 The current provider APIs use query-string keys, so HTTP diagnostics must redact complete query strings and never log raw request URLs. OutLayer network manifest must grant exact hosts only:
 - `api.imf.org` (existing monthly benchmark)
@@ -85,8 +89,9 @@ Perps execution freshness must be configured against the actual vendor delivery 
 ## Rollout gates
 
 ### Gate 1 — Source access (requires owner action)
-- Create Commodities-API account and verify that the selected tier exposes both `COFFEE` and `ROBUSTA` at a known update interval.
-- Create Barchart OnDemand account and confirm the account can query ICE/US Coffee C (`KC*0`) and ICE/EU Robusta (`RM*0`) with `lastPrice`, `tradeTimestamp`, and `mode`.
+- Create Commodities-API account and verify that the selected tier exposes specific dated ICE contracts for Arabica (`KC...`) and Robusta (`RM...`) at a known update interval.
+- Create Barchart OnDemand account and confirm it can query those same exact dated symbols, with `lastPrice`, `tradeTimestamp`, and `mode`.
+- Confirm the chosen futures expiries are still liquid and have not reached first notice / last trading date; plan the next manual rollover.
 - Confirm each account's data-use and redistribution terms. A Testnet-only chain does not waive market-data licensing conditions.
 - Keep both API keys private; add them to OutLayer Secrets, not this repository.
 
