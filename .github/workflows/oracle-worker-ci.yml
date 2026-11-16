@@ -10,6 +10,15 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/oracle-worker-ci.yml"
+  pull_request:
+    branches:
+      - hackathon-submission
+    paths:
+      - "workers/coffee-price-index/**"
+      - "packages/shared/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/oracle-worker-ci.yml"
 
 permissions:
   contents: read
