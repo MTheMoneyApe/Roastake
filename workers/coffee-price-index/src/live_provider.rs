@@ -49,18 +49,29 @@ impl CoffeeKind {
         }
     }
 
-    fn commodities_symbol(self) -> &'static str {
-        match self {
-            Self::Arabica => "COFFEE",
-            Self::Robusta => "ROBUSTA",
+    /// Require an explicit dated ICE contract so both vendors price the same expiry.
+    /// Rollover is an operator action; never silently compare different delivery months.
+    fn contract_symbol(self) -> Result<String, String> {
+        let (variable, prefix) = match self {
+            Self::Arabica => ("ARABICA_FUTURES_SYMBOL", "KC"),
+            Self::Robusta => ("ROBUSTA_FUTURES_SYMBOL", "RM"),
+        };
+        let symbol = env::var(variable)
+            .map_err(|_| format!("{variable} must be configured in the OutLayer Testnet secrets profile"))?;
+        let bytes = symbol.as_bytes();
+        let valid_month_code = bytes.get(2).map(|b| b"FGHJKMNQUVXZ".contains(b)).unwrap_or(false);
+        if bytes.len() != 5
+            || !symbol.starts_with(prefix)
+            || !valid_month_code
+            || !bytes[3..].iter().all(|b| b.is_ascii_digit())
+        {
+            return Err(format!(
+                "{variable} must be a dated {} ICE contract code such as {}",
+                if self == Self::Arabica { "Coffee C" } else { "Robusta" },
+                if self == Self::Arabica { "KCZ26" } else { "RMF27" }
+            ));
         }
-    }
-
-    fn barchart_root(self) -> &'static str {
-        match self {
-            Self::Arabica => "KC",
-            Self::Robusta => "RM",
-        }
+        Ok(symbol)
     }
 
     fn convert_commodities_inverse_rate(self, rate: &str) -> Result<u128, String> {
@@ -101,6 +112,7 @@ pub fn fetch_live_index_price<T: HttpTransport>(
     }
     let market = input.market.as_str();
     let kind = CoffeeKind::from_market(market)?;
+    let contract_symbol = kind.contract_symbol()?;
     let min_source_count = input
         .min_source_count
         .ok_or_else(|| "live_index request is missing min_source_count".to_string())?;
@@ -115,7 +127,7 @@ pub fn fetch_live_index_price<T: HttpTransport>(
     let mut failures = Vec::new();
 
     match env::var("COMMODITIES_API_KEY") {
-        Ok(key) if !key.trim().is_empty() => match fetch_commodities_api_quote(client, kind, &key) {
+        Ok(key) if !key.trim().is_empty() => match fetch_commodities_api_quote(client, kind, &contract_symbol, &key) {
             Ok(quote) => match validate_quote_freshness(&quote, now_sec, max_age_sec) {
                 Ok(()) => quotes.push(quote),
                 Err(error) => failures.push(format!("{COMMODITIES_API_SOURCE}: {error}")),
@@ -126,7 +138,7 @@ pub fn fetch_live_index_price<T: HttpTransport>(
     }
 
     match env::var("BARCHART_API_KEY") {
-        Ok(key) if !key.trim().is_empty() => match fetch_barchart_quote(client, kind, &key) {
+        Ok(key) if !key.trim().is_empty() => match fetch_barchart_quote(client, kind, &contract_symbol, &key) {
             Ok(quote) => match validate_quote_freshness(&quote, now_sec, max_age_sec) {
                 Ok(()) => quotes.push(quote),
                 Err(error) => failures.push(format!("{BARCHART_SOURCE}: {error}")),
@@ -142,9 +154,10 @@ pub fn fetch_live_index_price<T: HttpTransport>(
 fn fetch_commodities_api_quote<T: HttpTransport>(
     client: &HttpClient<T>,
     kind: CoffeeKind,
+    contract_symbol: &str,
     api_key: &str,
 ) -> Result<Quote, String> {
-    let symbol = kind.commodities_symbol();
+    let symbol = contract_symbol;
     let url = format!(
         "https://{COMMODITIES_API_HOST}/api/latest?access_key={}&base=USD&symbols={symbol}",
         percent_encode_query_component(api_key)
@@ -188,13 +201,13 @@ fn fetch_commodities_api_quote<T: HttpTransport>(
 fn fetch_barchart_quote<T: HttpTransport>(
     client: &HttpClient<T>,
     kind: CoffeeKind,
+    contract_symbol: &str,
     api_key: &str,
 ) -> Result<Quote, String> {
-    let root = kind.barchart_root();
-    let symbol = format!("{root}*0");
-    let encoded_symbol = format!("{root}%2A0");
+    // Query the exact same dated ICE contract as Commodities-API, not a dynamic front-month root.
+    let symbol = contract_symbol;
     let url = format!(
-        "https://{BARCHART_HOST}/getQuote.json?apikey={}&symbols={encoded_symbol}",
+        "https://{BARCHART_HOST}/getQuote.json?apikey={}&symbols={symbol}",
         percent_encode_query_component(api_key)
     );
     let request = HttpRequest::get(Some(BARCHART_SOURCE), url)
@@ -220,22 +233,18 @@ fn fetch_barchart_quote<T: HttpTransport>(
         .get("results")
         .and_then(Value::as_array)
         .ok_or_else(|| "provider response is missing results array".to_string())?;
-    let expected_root = root;
     let matching: Vec<&Value> = results
         .iter()
         .filter(|item| {
             item.get("symbol")
                 .and_then(Value::as_str)
-                .map(|actual| {
-                    actual == symbol
-                        || (actual.starts_with(expected_root) && actual.len() >= 4)
-                })
+                .map(|actual| actual.eq_ignore_ascii_case(symbol))
                 .unwrap_or(false)
         })
         .collect();
     if matching.len() != 1 {
         return Err(format!(
-            "expected exactly one active {root} futures quote, received {}",
+            "expected exactly one quote for dated ICE contract {symbol}, received {}",
             matching.len()
         ));
     }
@@ -271,7 +280,7 @@ fn fetch_barchart_quote<T: HttpTransport>(
     let actual_symbol = item
         .get("symbol")
         .and_then(Value::as_str)
-        .unwrap_or(&symbol);
+        .ok_or_else(|| "provider quote is missing symbol".to_string())?;
 
     Ok(Quote {
         source: format!("{BARCHART_SOURCE}:{actual_symbol}:{mode}"),
@@ -549,13 +558,14 @@ mod tests {
 
     #[test]
     fn barchart_exchange_quotes_use_ice_units() {
+        // ICE Coffee C: 287.15 US cents/lb. ICE Robusta: 3,215 USD/metric tonne.
         let arabica = CoffeeKind::Arabica
-            .convert_exchange_quote_e12(279_400_000_000_000)
+            .convert_exchange_quote_e12(287_150_000_000_000)
             .unwrap();
         let robusta = CoffeeKind::Robusta
             .convert_exchange_quote_e12(3_215_000_000_000_000)
             .unwrap();
-        assert!((615_000_000..=617_000_000).contains(&arabica));
+        assert!((632_000_000..=634_000_000).contains(&arabica));
         assert_eq!(robusta, 321_500_000);
     }
 
@@ -564,6 +574,61 @@ mod tests {
         let local = parse_barchart_datetime_to_unix("2026-11-13 17:29:00-05:00").unwrap();
         let utc = parse_barchart_datetime_to_unix("2026-11-13T22:29:00Z").unwrap();
         assert_eq!(local, utc);
+    }
+
+    #[test]
+    fn commodities_api_fetches_an_exact_dated_ice_contract() {
+        use crate::transport::{MockHttpTransport, NetworkAllowlist};
+
+        let mock = MockHttpTransport::new();
+        mock.enqueue_ok_json(
+            200,
+            br#"{"success":true,"timestamp":1793512806,"base":"USD","rates":{"KCZ26":0.0034825004353126}}"#.to_vec(),
+        );
+        let allowlist = NetworkAllowlist::from_hosts(&[COMMODITIES_API_HOST]).unwrap();
+        let client = HttpClient::new(&mock, allowlist);
+        let quote = fetch_commodities_api_quote(&client, CoffeeKind::Arabica, "KCZ26", "test-key")
+            .unwrap();
+        assert_eq!(quote.source, "commodities-api:KCZ26");
+        assert_eq!(quote.observed_at_sec, 1_793_512_806);
+        assert!((632_000_000..=634_000_000).contains(&quote.price_usd_per_kg_e8));
+    }
+
+    #[test]
+    fn barchart_fetch_rejects_a_different_expiry() {
+        use crate::transport::{MockHttpTransport, NetworkAllowlist};
+
+        let mock = MockHttpTransport::new();
+        mock.enqueue_ok_json(
+            200,
+            br#"{"status":{"code":200},"results":[{"symbol":"KCH27","mode":"i","lastPrice":287.15,"tradeTimestamp":"2026-11-13T22:29:00Z"}]}"#.to_vec(),
+        );
+        let allowlist = NetworkAllowlist::from_hosts(&[BARCHART_HOST]).unwrap();
+        let client = HttpClient::new(&mock, allowlist);
+        let error = fetch_barchart_quote(&client, CoffeeKind::Arabica, "KCZ26", "test-key")
+            .unwrap_err();
+        assert!(error.contains("dated ICE contract KCZ26"));
+    }
+
+    #[test]
+    fn barchart_fetches_the_same_dated_contract_and_uses_exchange_timestamp() {
+        use crate::transport::{MockHttpTransport, NetworkAllowlist};
+
+        let mock = MockHttpTransport::new();
+        mock.enqueue_ok_json(
+            200,
+            br#"{"status":{"code":200},"results":[{"symbol":"KCZ26","mode":"i","lastPrice":287.15,"tradeTimestamp":"2026-11-13T17:29:00-05:00"}]}"#.to_vec(),
+        );
+        let allowlist = NetworkAllowlist::from_hosts(&[BARCHART_HOST]).unwrap();
+        let client = HttpClient::new(&mock, allowlist);
+        let quote = fetch_barchart_quote(&client, CoffeeKind::Arabica, "KCZ26", "test-key")
+            .unwrap();
+        assert_eq!(quote.source, "barchart:KCZ26:i");
+        assert_eq!(
+            quote.observed_at_sec,
+            parse_barchart_datetime_to_unix("2026-11-13T22:29:00Z").unwrap()
+        );
+        assert!((632_000_000..=634_000_000).contains(&quote.price_usd_per_kg_e8));
     }
 
     #[test]
