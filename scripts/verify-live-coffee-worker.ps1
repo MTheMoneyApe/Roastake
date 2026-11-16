@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 $targetTriple = "wasm32-wasip2"
 $packageName = "roastake-coffee-price-index"
-$wasmRelativePath = "target/$targetTriple/release/roastake_coffee_price_index.wasm"
+$wasmRelativePath = "target/$targetTriple/release/roastake-coffee-price-index.wasm"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 function Require-Command([string]$Name) {
