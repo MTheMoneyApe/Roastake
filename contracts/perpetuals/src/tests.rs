@@ -1033,6 +1033,16 @@ fn test_async_xcc_callbacks_reject_imf_promise_failure_and_replay_safely() {
         None,
         None,
     );
+    let external_market_view = c.get_market(MARKET_XCC.to_string()).unwrap();
+    assert_eq!(
+        external_market_view.feed_classification,
+        format!("EXTERNAL_XCC:{}", oracle_id())
+    );
+    assert!(
+        !external_market_view.is_synthetic_testnet_sandbox,
+        "ExternalXcc must never be marked as a synthetic Testnet sandbox feed"
+    );
+    assert_eq!(external_market_view.sandbox_operator, None);
     register_user(&mut c, lp_id(), 1_000);
     register_user(&mut c, alice_id(), 1_000);
     let _ = deposit_usdc(
