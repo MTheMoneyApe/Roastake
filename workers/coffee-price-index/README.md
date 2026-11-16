@@ -57,7 +57,7 @@ No wildcard hosts are enabled.
 ### Market-data semantics and limitations
 
 - Commodities-API's `latest` cadence depends on its subscription tier (documented at 60 minutes, 10 minutes, or 60 seconds).
-- Barchart `mode` must indicate real-time (`R`) or delayed intraday (`I)); end-of-day (`D`) results are rejected. The Barchart `tradeTimestamp` is used for freshness.
+- Barchart `mode` must indicate real-time (`R`) or delayed intraday (`I`); end-of-day (`D`) results are rejected. The Barchart `tradeTimestamp` is used for freshness.
 - The two services are separate vendors distributing quotations for the same ICE contract. They are not two independent exchanges or two independent underlying price-discovery venues. `source_count` means the number of vendor observations accepted by the worker.
 - Data redistribution and vendor licensing terms still apply on Testnet.
 - A successful TEE attestation proves the worker execution and its input/output hashes; it does not prove that an upstream vendor's market data is economically correct.
