@@ -632,6 +632,39 @@ mod tests {
     }
 
     #[test]
+    fn commodities_api_fetches_exact_dated_robusta_contract_and_normalizes_tonnes() {
+        use crate::transport::{MockHttpTransport, NetworkAllowlist};
+
+        let mock = MockHttpTransport::new();
+        mock.enqueue_ok_json(
+            200,
+            br#"{"success":true,"timestamp":1793512806,"base":"USD","rates":{"RMF27":0.00031104199066874}}"#.to_vec(),
+        );
+        let allowlist = NetworkAllowlist::from_hosts(&[COMMODITIES_API_HOST]).unwrap();
+        let client = HttpClient::new(&mock, allowlist);
+        let quote = fetch_commodities_api_quote(&client, CoffeeKind::Robusta, "RMF27", "test-key")
+            .unwrap();
+        assert_eq!(quote.source, "commodities-api:RMF27");
+        assert_eq!(quote.price_usd_per_kg_e8, 321_500_000);
+    }
+
+    #[test]
+    fn barchart_end_of_day_quotes_are_rejected() {
+        use crate::transport::{MockHttpTransport, NetworkAllowlist};
+
+        let mock = MockHttpTransport::new();
+        mock.enqueue_ok_json(
+            200,
+            br#"{"status":{"code":200},"results":[{"symbol":"RMF27","mode":"d","lastPrice":3215,"tradeTimestamp":"2026-11-13T22:29:00Z"}]}"#.to_vec(),
+        );
+        let allowlist = NetworkAllowlist::from_hosts(&[BARCHART_HOST]).unwrap();
+        let client = HttpClient::new(&mock, allowlist);
+        let error = fetch_barchart_quote(&client, CoffeeKind::Robusta, "RMF27", "test-key")
+            .unwrap_err();
+        assert!(error.contains("not real-time or delayed intraday"));
+    }
+
+    #[test]
     fn timestamp_parser_rejects_missing_timezone() {
         assert!(parse_barchart_datetime_to_unix("2026-11-13 17:29:00").is_err());
     }
