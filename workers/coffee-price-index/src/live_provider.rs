@@ -12,8 +12,8 @@ use crate::transport::{HttpClient, HttpRequest, HttpTransport};
 use roastake_shared::{
     calculate_divergence_bps, convert_usc_per_lb_e12_to_usd_per_kg_e8,
     parse_decimal_e12_round_half_up, round_half_up_div_u128, WorkerInput, WorkerOutput,
-    DATA_CLASS_LIVE_AGGREGATED, DATA_CLASS_LIVE_VERIFIED, DECIMALS_COFFEE_INDEX,
-    MODE_LIVE_INDEX, SCHEMA_VERSION, UNIT_USD_PER_KG,
+    DATA_CLASS_LIVE_AGGREGATED, DATA_CLASS_LIVE_VERIFIED, DECIMALS_COFFEE_INDEX, MODE_LIVE_INDEX,
+    SCHEMA_VERSION, UNIT_USD_PER_KG,
 };
 use serde_json::Value;
 
@@ -56,10 +56,14 @@ impl CoffeeKind {
             Self::Arabica => ("ARABICA_FUTURES_SYMBOL", "KC"),
             Self::Robusta => ("ROBUSTA_FUTURES_SYMBOL", "RM"),
         };
-        let symbol = env::var(variable)
-            .map_err(|_| format!("{variable} must be configured in the OutLayer Testnet secrets profile"))?;
+        let symbol = env::var(variable).map_err(|_| {
+            format!("{variable} must be configured in the OutLayer Testnet secrets profile")
+        })?;
         let bytes = symbol.as_bytes();
-        let valid_month_code = bytes.get(2).map(|b| b"FGHJKMNQUVXZ".contains(b)).unwrap_or(false);
+        let valid_month_code = bytes
+            .get(2)
+            .map(|b| b"FGHJKMNQUVXZ".contains(b))
+            .unwrap_or(false);
         if bytes.len() != 5
             || !symbol.starts_with(prefix)
             || !valid_month_code
@@ -67,8 +71,16 @@ impl CoffeeKind {
         {
             return Err(format!(
                 "{variable} must be a dated {} ICE contract code such as {}",
-                if self == Self::Arabica { "Coffee C" } else { "Robusta" },
-                if self == Self::Arabica { "KCZ26" } else { "RMF27" }
+                if self == Self::Arabica {
+                    "Coffee C"
+                } else {
+                    "Robusta"
+                },
+                if self == Self::Arabica {
+                    "KCZ26"
+                } else {
+                    "RMF27"
+                }
             ));
         }
         Ok(symbol)
@@ -127,24 +139,28 @@ pub fn fetch_live_index_price<T: HttpTransport>(
     let mut failures = Vec::new();
 
     match env::var("COMMODITIES_API_KEY") {
-        Ok(key) if !key.trim().is_empty() => match fetch_commodities_api_quote(client, kind, &contract_symbol, &key) {
-            Ok(quote) => match validate_quote_freshness(&quote, now_sec, max_age_sec) {
-                Ok(()) => quotes.push(quote),
+        Ok(key) if !key.trim().is_empty() => {
+            match fetch_commodities_api_quote(client, kind, &contract_symbol, &key) {
+                Ok(quote) => match validate_quote_freshness(&quote, now_sec, max_age_sec) {
+                    Ok(()) => quotes.push(quote),
+                    Err(error) => failures.push(format!("{COMMODITIES_API_SOURCE}: {error}")),
+                },
                 Err(error) => failures.push(format!("{COMMODITIES_API_SOURCE}: {error}")),
-            },
-            Err(error) => failures.push(format!("{COMMODITIES_API_SOURCE}: {error}")),
-        },
+            }
+        }
         _ => failures.push("COMMODITIES_API_KEY is not configured in OutLayer Secrets".to_string()),
     }
 
     match env::var("BARCHART_API_KEY") {
-        Ok(key) if !key.trim().is_empty() => match fetch_barchart_quote(client, kind, &contract_symbol, &key) {
-            Ok(quote) => match validate_quote_freshness(&quote, now_sec, max_age_sec) {
-                Ok(()) => quotes.push(quote),
+        Ok(key) if !key.trim().is_empty() => {
+            match fetch_barchart_quote(client, kind, &contract_symbol, &key) {
+                Ok(quote) => match validate_quote_freshness(&quote, now_sec, max_age_sec) {
+                    Ok(()) => quotes.push(quote),
+                    Err(error) => failures.push(format!("{BARCHART_SOURCE}: {error}")),
+                },
                 Err(error) => failures.push(format!("{BARCHART_SOURCE}: {error}")),
-            },
-            Err(error) => failures.push(format!("{BARCHART_SOURCE}: {error}")),
-        },
+            }
+        }
         _ => failures.push("BARCHART_API_KEY is not configured in OutLayer Secrets".to_string()),
     }
 
@@ -325,8 +341,14 @@ fn aggregate_quotes(
     }
 
     quotes.sort_by_key(|q| q.price_usd_per_kg_e8);
-    let min_price = quotes.first().expect("non-empty after count check").price_usd_per_kg_e8;
-    let max_price = quotes.last().expect("non-empty after count check").price_usd_per_kg_e8;
+    let min_price = quotes
+        .first()
+        .expect("non-empty after count check")
+        .price_usd_per_kg_e8;
+    let max_price = quotes
+        .last()
+        .expect("non-empty after count check")
+        .price_usd_per_kg_e8;
     let spread_bps = calculate_divergence_bps(min_price, max_price);
     if spread_bps > max_source_spread_bps {
         return Err(format!(
@@ -342,8 +364,7 @@ fn aggregate_quotes(
         let sum = lower
             .checked_add(upper)
             .ok_or_else(|| "aggregated price overflow".to_string())?;
-        round_half_up_div_u128(sum, 2)
-            .map_err(|e| format!("median price rounding failed: {e}"))?
+        round_half_up_div_u128(sum, 2).map_err(|e| format!("median price rounding failed: {e}"))?
     };
 
     let source = quotes
@@ -425,9 +446,9 @@ fn percent_encode_query_component(value: &str) -> String {
 /// into Unix seconds. The exchange trade time, not Barchart's server time, is used for freshness.
 fn parse_barchart_datetime_to_unix(raw: &str) -> Result<u64, String> {
     let normalized = raw.trim().replace(' ', "T");
-    let t_pos = normalized
-        .find('T')
-        .ok_or_else(|| "invalid Barchart tradeTimestamp: missing date/time separator".to_string())?;
+    let t_pos = normalized.find('T').ok_or_else(|| {
+        "invalid Barchart tradeTimestamp: missing date/time separator".to_string()
+    })?;
     let date = &normalized[..t_pos];
     let time_and_zone = &normalized[t_pos + 1..];
     let date_bytes = date.as_bytes();
@@ -516,7 +537,9 @@ fn parse_barchart_datetime_to_unix(raw: &str) -> Result<u64, String> {
         if zone_raw.len() != 6 || &zone_raw[3..4] != ":" {
             return Err("Barchart tradeTimestamp has an invalid UTC offset".to_string());
         }
-        let sign = if zone_raw.starts_with('-') { -1i64 } else if zone_raw.starts_with('+') {
+        let sign = if zone_raw.starts_with('-') {
+            -1i64
+        } else if zone_raw.starts_with('+') {
             1i64
         } else {
             return Err("Barchart tradeTimestamp has an invalid UTC offset sign".to_string());
@@ -616,8 +639,8 @@ mod tests {
         );
         let allowlist = NetworkAllowlist::from_hosts(&[COMMODITIES_API_HOST]).unwrap();
         let client = HttpClient::new(&mock, allowlist);
-        let quote = fetch_commodities_api_quote(&client, CoffeeKind::Arabica, "KCZ26", "test-key")
-            .unwrap();
+        let quote =
+            fetch_commodities_api_quote(&client, CoffeeKind::Arabica, "KCZ26", "test-key").unwrap();
         assert_eq!(quote.source, "commodities-api:KCZ26");
         assert_eq!(quote.observed_at_sec, 1_793_512_806);
         assert!((632_000_000..=634_000_000).contains(&quote.price_usd_per_kg_e8));
@@ -650,8 +673,8 @@ mod tests {
         );
         let allowlist = NetworkAllowlist::from_hosts(&[BARCHART_HOST]).unwrap();
         let client = HttpClient::new(&mock, allowlist);
-        let error = fetch_barchart_quote(&client, CoffeeKind::Arabica, "KCZ26", "test-key")
-            .unwrap_err();
+        let error =
+            fetch_barchart_quote(&client, CoffeeKind::Arabica, "KCZ26", "test-key").unwrap_err();
         assert!(error.contains("dated ICE contract KCZ26"));
     }
 
@@ -666,8 +689,8 @@ mod tests {
         );
         let allowlist = NetworkAllowlist::from_hosts(&[BARCHART_HOST]).unwrap();
         let client = HttpClient::new(&mock, allowlist);
-        let quote = fetch_barchart_quote(&client, CoffeeKind::Arabica, "KCZ26", "test-key")
-            .unwrap();
+        let quote =
+            fetch_barchart_quote(&client, CoffeeKind::Arabica, "KCZ26", "test-key").unwrap();
         assert_eq!(quote.source, "barchart:KCZ26:i");
         assert_eq!(
             quote.observed_at_sec,
@@ -687,8 +710,8 @@ mod tests {
         );
         let allowlist = NetworkAllowlist::from_hosts(&[COMMODITIES_API_HOST]).unwrap();
         let client = HttpClient::new(&mock, allowlist);
-        let quote = fetch_commodities_api_quote(&client, CoffeeKind::Robusta, "RMF27", "test-key")
-            .unwrap();
+        let quote =
+            fetch_commodities_api_quote(&client, CoffeeKind::Robusta, "RMF27", "test-key").unwrap();
         assert_eq!(quote.source, "commodities-api:RMF27");
         assert_eq!(quote.price_usd_per_kg_e8, 321_500_000);
     }
@@ -704,8 +727,8 @@ mod tests {
         );
         let allowlist = NetworkAllowlist::from_hosts(&[BARCHART_HOST]).unwrap();
         let client = HttpClient::new(&mock, allowlist);
-        let error = fetch_barchart_quote(&client, CoffeeKind::Robusta, "RMF27", "test-key")
-            .unwrap_err();
+        let error =
+            fetch_barchart_quote(&client, CoffeeKind::Robusta, "RMF27", "test-key").unwrap_err();
         assert!(error.contains("not real-time or delayed intraday"));
     }
 

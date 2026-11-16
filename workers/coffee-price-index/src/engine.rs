@@ -1,13 +1,15 @@
 //! Core execution engine for the Coffee Price Index WASI worker.
 
-use crate::provider::{FixtureProvider, ImfPcpsProvider, PriceProvider};
 use crate::live_provider::fetch_live_index_price_now;
+use crate::provider::{FixtureProvider, ImfPcpsProvider, PriceProvider};
 #[cfg(feature = "wasi-http")]
 use crate::transport::WasiHttpTransport;
 use crate::transport::{HttpClient, HttpTransport, NetworkAllowlist};
 #[cfg(not(feature = "wasi-http"))]
 use crate::transport::{HttpRequest, HttpResponse, TransportError, ValidatedUrl};
-use roastake_shared::{WorkerInput, WorkerOutput, MODE_FIXTURE, MODE_LIVE_INDEX, MODE_PUBLIC_BENCHMARK};
+use roastake_shared::{
+    WorkerInput, WorkerOutput, MODE_FIXTURE, MODE_LIVE_INDEX, MODE_PUBLIC_BENCHMARK,
+};
 
 /// Native fallback transport that always fails closed when `wasi-http` is disabled.
 #[cfg(not(feature = "wasi-http"))]
@@ -71,10 +73,7 @@ pub fn process_request_with_transport<T: HttpTransport>(
             fetch_live_index_price_now(&client, &input)?
         }
         other => {
-            return Err(format!(
-                "unsupported execution mode '{}'",
-                other
-            ));
+            return Err(format!("unsupported execution mode '{}'", other));
         }
     };
 
