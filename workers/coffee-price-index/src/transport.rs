@@ -1135,6 +1135,8 @@ mod tests {
         assert!(allowlist.allows("API.IMF.ORG"));
         assert!(allowlist.allows("commodities-api.com"));
         assert!(allowlist.allows("ondemand.websol.barchart.com"));
+        assert!(!allowlist.allows("sub.commodities-api.com"));
+        assert!(!allowlist.allows("sub.ondemand.websol.barchart.com"));
         assert!(!allowlist.allows("example.com"));
         assert!(!allowlist.allows("sub.api.imf.org"));
         assert!(!allowlist.allows("imf.org"));
