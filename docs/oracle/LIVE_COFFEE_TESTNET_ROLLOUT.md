@@ -48,9 +48,9 @@ For each market:
 6. Calculate source spread using the lowest accepted quote as denominator. Reject if spread exceeds the configured maximum.
 7. Publish the arithmetic midpoint for two sources or the median for three or more sources.
 8. Set `observed_at` to the oldest timestamp among participating quotes, so the aggregate is never presented as fresher than its stalest input.
-9. Use a bounded source label and source count; retain provider-level quote details in structured worker diagnostics / off-chain evidence.
+9. Use a bounded source label and source count.
 
-The current `WorkerOutput` has only `source` and `source_count`; detailed per-provider provenance should be persisted in off-chain execution evidence until a versioned on-chain schema extension is designed.
+The current worker output stores the combined provider label and source count, but not each vendor's raw price and timestamp. Capturing independently verifiable per-provider quote evidence is a follow-up task; until then, do not claim that the on-chain observation alone contains a full source-by-source audit trail.
 
 ## Required environment secrets
 
