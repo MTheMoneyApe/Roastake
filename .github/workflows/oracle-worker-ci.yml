@@ -40,7 +40,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run worker and Perps view tests
-        run: cargo test -p roastake-coffee-price-index -p roastake-perpetuals
+        run: cargo test -p roastake-coffee-price-index -p roastake-perpetuals -p roastake-oracle-adapter
 
       - name: Build OutLayer WASI worker
         run: cargo build --release -p roastake-coffee-price-index --features wasi-http --target wasm32-wasip2
