@@ -1,0 +1,7 @@
+{
+  "capabilities": {
+    "network": [
+      "api.imf.org"
+    ]
+  }
+}

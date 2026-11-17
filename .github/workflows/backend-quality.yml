@@ -1,0 +1,43 @@
+name: Backend quality
+
+on:
+  push:
+    branches:
+      - hackathon-submission
+      - feat/fastnear-account-history-backfill
+      - fix/fastnear-perps-function-call-filter
+  workflow_dispatch:
+
+concurrency:
+  group: backend-quality-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  node-validation:
+    name: Indexer tests and operator helper syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned operator dependency
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Resolve operator SDK exports
+        run: node --input-type=module -e 'import("near-api-js").then((m) => { if (!m.Account || !m.JsonRpcProvider || !m.teraToGas) process.exit(1); })'
+      - name: Check operator helper syntax
+        run: node --check scripts/keep-prices-fresh.mjs
+      - name: Run indexer test suite
+        working-directory: services/perps-indexer
+        run: |
+          for test_file in test/*.test.mjs; do
+            echo "::group::Testing $test_file"
+            timeout 90s node --test "$test_file"
+            echo "::endgroup::"
+          done

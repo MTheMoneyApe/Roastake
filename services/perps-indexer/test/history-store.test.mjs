@@ -1,0 +1,186 @@
+// SPDX-License-Identifier: LicenseRef-ROASTAKE-Evaluation-Only
+// Copyright © 2026 @MTheMoneyApe. All rights reserved.
+
+import { afterEach, beforeEach, describe, it } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createHistoryStore, IndexerLockError } from "../src/history-store.mjs";
+import { ARABICA_MARKET_ID, PERPS_CONTRACT_ID } from "../src/config.mjs";
+
+function makeObsEvent(seq, ts, txHash) {
+  return {
+    eventId: `${txHash}:rcpt-${seq}:0`,
+    network: "testnet",
+    contractId: PERPS_CONTRACT_ID,
+    marketId: ARABICA_MARKET_ID,
+    category: "oracle_observation",
+    eventType: "oracle_sandbox_tick",
+    blockHeight: 277160000 + seq,
+    blockHash: `Blk${seq}`,
+    blockTimestamp: ts + 3,
+    shardId: 4,
+    receiptId: `rcpt-${seq}`,
+    transactionHash: txHash,
+    eventIndex: 0,
+    data: {
+      market_id: ARABICA_MARKET_ID,
+      publisher: "roastake-dev-mta.testnet",
+      sequence: seq,
+      oracle_seq: seq,
+      price_e8: "1000000000",
+      priceUsd: 10,
+      observed_at_sec: ts,
+      data_class: "TESTNET_SANDBOX_FEED",
+    },
+    finality: "FINAL",
+    source: "neardata_final_block",
+    indexedAt: "2026-11-11T08:00:00.000Z",
+  };
+}
+
+describe("perps-indexer durable JSONL store, deduplication, crash recovery & writer lock", () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "roastake-store-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("persists JSONL, deduplicates eventId & oracle sequences, saves cursor, and prevents concurrent writers", () => {
+    const store1 = createHistoryStore({ dataDir: tmpDir, lockWaitMs: 0 });
+    store1.open();
+
+    // Concurrent writer lock check while store1 is open
+    const storeConcurrent = createHistoryStore({ dataDir: tmpDir, lockWaitMs: 0 });
+    assert.throws(() => storeConcurrent.open(), IndexerLockError);
+
+    const e1 = makeObsEvent(1, 1794368226, "Tx1");
+    const e1DupHash = makeObsEvent(99, 1794368226, "Tx1"); // same tx & receipt -> duplicate eventId!
+    e1DupHash.eventId = e1.eventId;
+    const e1DupSeq = makeObsEvent(1, 1794368500, "Tx1Other"); // same oracle sequence 1!
+
+    const res = store1.appendEvents([e1, e1DupHash, e1DupSeq]);
+    assert.equal(res.appended.length, 1);
+    assert.equal(res.duplicateRejections.length, 2);
+
+    store1.saveCursor({
+      coverageStartHeight: 277185000,
+      indexedThroughHeight: 277185005,
+      indexedThroughHash: "Blk277185005",
+      lastFinalizedHeight: 277185005,
+      blocksProcessed: 6,
+    });
+    store1.close();
+
+    // Reopen cleanly after restart
+    const store2 = createHistoryStore({ dataDir: tmpDir });
+    store2.open();
+    assert.equal(store2.getOracleObservations().length, 1);
+    assert.equal(store2.getCursor().indexedThroughHeight, 277185005);
+    store2.close();
+  });
+
+
+  it("reclaims a legacy lock when its PID collides with the new container PID", () => {
+    const lockPath = path.join(tmpDir, "writer.lock");
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: process.pid, startedAt: "2026-11-14T00:00:00.000Z" }) + "\n",
+      "utf8",
+    );
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, old, old);
+
+    const store = createHistoryStore({ dataDir: tmpDir });
+    assert.doesNotThrow(() => store.open());
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).ownerId.startsWith(String(process.pid)), true);
+    store.close();
+    assert.equal(fs.existsSync(lockPath), false);
+  });
+
+
+
+  it("reclaims a writer lock from a previous Railway deployment after volume handoff", () => {
+    const lockPath = path.join(tmpDir, "writer.lock");
+    const previous = process.env.RAILWAY_DEPLOYMENT_ID;
+    process.env.RAILWAY_DEPLOYMENT_ID = "current-deployment";
+    try {
+      fs.writeFileSync(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          ownerId: "previous-owner",
+          deploymentId: "previous-deployment",
+          startedAt: new Date().toISOString(),
+        }) + "\n",
+        "utf8",
+      );
+
+      const store = createHistoryStore({ dataDir: tmpDir, lockWaitMs: 0 });
+      assert.doesNotThrow(() => store.open());
+      assert.equal(
+        JSON.parse(fs.readFileSync(lockPath, "utf8")).deploymentId,
+        "current-deployment",
+      );
+      store.close();
+    } finally {
+      if (previous === undefined) delete process.env.RAILWAY_DEPLOYMENT_ID;
+      else process.env.RAILWAY_DEPLOYMENT_ID = previous;
+    }
+  });
+
+  it("does not reclaim a fresh legacy lock solely because its PID matches", () => {
+    const lockPath = path.join(tmpDir, "writer.lock");
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n",
+      "utf8",
+    );
+
+    const store = createHistoryStore({ dataDir: tmpDir, lockWaitMs: 0 });
+    assert.throws(() => store.open(), IndexerLockError);
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).pid, process.pid);
+  });
+
+  it("does not reclaim a fresh lock owned by another instance even when the PID matches", () => {
+    const lockPath = path.join(tmpDir, "writer.lock");
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        ownerId: "other-instance",
+        startedAt: new Date().toISOString(),
+      }) + "\n",
+      "utf8",
+    );
+
+    const store = createHistoryStore({ dataDir: tmpDir, lockWaitMs: 0 });
+    assert.throws(() => store.open(), IndexerLockError);
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).ownerId, "other-instance");
+  });
+
+  it("truncates an incomplete corrupted trailing JSONL line during crash recovery without losing valid lines", () => {
+    const store1 = createHistoryStore({ dataDir: tmpDir });
+    store1.open();
+    store1.appendEvents([makeObsEvent(1, 1794368226, "Tx1"), makeObsEvent(2, 1794369109, "Tx2")]);
+    store1.close();
+
+    // Simulate power failure mid-write on line 3
+    const eventsPath = path.join(tmpDir, "events.jsonl");
+    fs.appendFileSync(eventsPath, '{"eventId":"Tx3:rcpt:0","broken_partial_line":', "utf8");
+
+    const recoveredStore = createHistoryStore({ dataDir: tmpDir });
+    recoveredStore.open();
+    assert.equal(recoveredStore.getOracleObservations().length, 2);
+    assert.ok(recoveredStore.getStats().recoveredTruncatedBytes > 0);
+    // Cleanly appends after recovery
+    recoveredStore.appendEvents([makeObsEvent(3, 1794375377, "Tx3")]);
+    assert.equal(recoveredStore.getOracleObservations().length, 3);
+    recoveredStore.close();
+  });
+});

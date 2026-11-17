@@ -1,0 +1,20 @@
+[package]
+name = "roastake-oracle-adapter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "NEAR Testnet Oracle Adapter contract for ROASTAKE OutLayer integration"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { version = "5.30.1" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+roastake-shared = { path = "../../packages/shared" }
+
+[dev-dependencies]
+near-sdk = { version = "5.30.1", features = ["unit-testing"] }

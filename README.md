@@ -20,3 +20,5 @@ Coffee participants face disconnected tools for hedging, purchasing and followin
 - No Mainnet release or independent third-party security audit is claimed.
 
 For the current Preview, frontend source and evaluation instructions, see [MTheMoneyApe/Roastake-frontend](https://github.com/MTheMoneyApe/Roastake-frontend).
+
+Verified implementation details live on the hackathon-submission branch.
