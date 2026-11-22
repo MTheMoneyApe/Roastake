@@ -138,7 +138,7 @@ async function main() {
             args: { market_id: market.id, price_e8: market.price, observed_at_sec: Math.floor(Date.now() / 1000), sequence },
             gas: teraToGas("30"), deposit: 0n, waitUntil: "FINAL"
           });
-          const tx = result?.transaction_outcome?.id || result?.transaction?.hash || "finalized";
+          const tx = result?.transaction_outcome?.id || result?.transaction?.hash || "unavailable";
           process.stdout.write("[" + new Date().toISOString() + "] " + market.name + " " + market.display + " seq=" + sequence + " tx=" + tx + "\n");
         } catch (error) {
           process.stderr.write(market.name + " refresh failed: " + (error instanceof Error ? error.message : String(error)) + "\n");
@@ -179,7 +179,7 @@ async function main() {
       deposit: oracleConfig.deposit,
       waitUntil: "FINAL",
     });
-    const tx = result?.transaction_outcome?.id || result?.transaction?.hash || "finalized";
+    const tx = result?.transaction_outcome?.id || result?.transaction?.hash || "unavailable";
     process.stdout.write("[" + new Date().toISOString() + "] Oracle Adapter " + oracleConfig.market + " request finalized tx=" + tx + "\n");
   }
 
