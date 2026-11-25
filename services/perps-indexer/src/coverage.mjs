@@ -163,6 +163,20 @@ export function buildCoverageSummary({ cursor, runtime = {}, backfillTxCount = 0
 
   const scannedSegments = extractScannedSegmentsFromCursor(cursor);
   const unionSegments = normalizeBlockSegments(scannedSegments, { ignoreSource: true });
+  const verifiedSkippedRanges = (Array.isArray(cursor?.verifiedSkippedRanges) ? cursor.verifiedSkippedRanges : [])
+    .filter((r) => Number.isSafeInteger(r?.fromHeight) &&
+      Number.isSafeInteger(r?.toHeight) && r.fromHeight > 0 &&
+      r.toHeight >= r.fromHeight && r.parentHeight === r.fromHeight - 1 &&
+      r.successorHeight === r.toHeight + 1 &&
+      typeof r.parentHash === "string" && r.parentHash.length > 0 &&
+      typeof r.successorHash === "string" && r.successorHash.length > 0 &&
+      isHeightCoveredBySegments(unionSegments, r.parentHeight) &&
+      isHeightCoveredBySegments(unionSegments, r.successorHeight));
+  // Verified absent heights close coverage gaps, but are not scanned blocks.
+  const accountedIntervals = normalizeBlockSegments([
+    ...unionSegments,
+    ...verifiedSkippedRanges.map((r) => ({ startHeight: r.fromHeight, endHeight: r.toHeight })),
+  ], { ignoreSource: true });
 
   const forwardSegments = scannedSegments.filter((s) => s.source === "forward_scan");
   const forwardPrimary =
@@ -201,7 +215,7 @@ export function buildCoverageSummary({ cursor, runtime = {}, backfillTxCount = 0
     if (seedBackfillRange && highestScanned > seedBackfillRange.maxHeight) {
       const gapWindowStart = seedBackfillRange.maxHeight + 1;
       const missingAfterSeed = computeMissingSubIntervals(
-        unionSegments,
+        accountedIntervals,
         gapWindowStart,
         highestScanned,
       );
@@ -216,7 +230,7 @@ export function buildCoverageSummary({ cursor, runtime = {}, backfillTxCount = 0
     } else if (unionSegments.length > 1) {
       // 2. Interior gaps between disconnected block-scan segments even without seed backfill
       const interiorMissing = computeMissingSubIntervals(
-        unionSegments,
+        accountedIntervals,
         lowestScanned,
         highestScanned,
       );
@@ -271,6 +285,7 @@ export function buildCoverageSummary({ cursor, runtime = {}, backfillTxCount = 0
     scannedSegments,
     contiguousIntervals: unionSegments,
     coverageSegments,
+    verifiedSkippedRanges,
     coverageGaps,
     coverageComplete,
     totalGapBlocks,
