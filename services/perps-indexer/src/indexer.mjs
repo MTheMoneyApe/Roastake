@@ -213,6 +213,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
   async function processSingleFinalizedBlock(pipeline, height, cursorSnapshot, fetchBlockCached) {
     const { spec, store, state, transient404Attempts, ignoredMarketIds } = pipeline;
     let blockPayload;
+    let verifiedSuccessorHeight = height;
     try {
       blockPayload = await fetchBlockCached(height);
     } catch (err) {
@@ -241,6 +242,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
             candidateHeader.prev_height !== header.prev_height ||
             candidateHeader.prev_hash !== header.prev_hash) throw err;
         blockPayload = candidate;
+        verifiedSuccessorHeight = next;
         console.info(`[perps-indexer:${spec.slug}] Verified skipped heights #${height}..#${next - 1}; parent=${header.prev_hash}; successor=${header.hash}`);
         break;
       }
@@ -256,6 +258,9 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       skipUnscopedProtocolEvents: multiMarketMode,
     });
 
+    if (parsed.blockHeight !== verifiedSuccessorHeight) {
+      throw new Error(`Unexpected finalized block height ${parsed.blockHeight}; expected ${verifiedSuccessorHeight}`);
+    }
     const { duplicateRejections } = store.appendEvents(parsed.events);
     const allRejections = [...parsed.rejected, ...duplicateRejections];
     const rejectionsByReason = { ...(cursorSnapshot.rejectionsByReason ?? {}) };
@@ -286,7 +291,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       scannedSegments,
       verifiedSkippedRanges: [
         ...(cursorSnapshot.verifiedSkippedRanges ?? []),
-        ...(parsed.blockHeight > height ? [{
+        ...(verifiedSuccessorHeight > height ? [{
           fromHeight: height,
           toHeight: parsed.blockHeight - 1,
           parentHeight: cursorSnapshot.indexedThroughHeight,
