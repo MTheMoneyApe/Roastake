@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createBlockSource } from "../src/block-source.mjs";
 const endpoint = "https://archival-rpc.testnet.near.org";
-const config = {nearDataBaseUrl:"https://neardata-testnet.fastnear.com",rpcEndpoints:[endpoint],archivalRpcEndpoints:[endpoint]};
+const config = {nearDataBaseUrl:"https://testnet.neardata.xyz",rpcEndpoints:[endpoint],archivalRpcEndpoints:[endpoint]};
 const source = (fetchFn, overrides={}) => createBlockSource({...config,...overrides},{fetchFn});
 const json = (body,status=200) => new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json"}});
 test("explicit UNKNOWN_BLOCK is distinguished from network failures",async()=>{
