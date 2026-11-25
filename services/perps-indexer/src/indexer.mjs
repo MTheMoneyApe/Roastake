@@ -281,6 +281,17 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       indexedThroughHash: parsed.blockHash,
       lastFinalizedHeight: state.lastFinalizedHeight ?? parsed.blockHeight,
       scannedSegments,
+      verifiedSkippedRanges: [
+        ...(cursorSnapshot.verifiedSkippedRanges ?? []),
+        ...(parsed.blockHeight > height ? [{
+          fromHeight: height,
+          toHeight: parsed.blockHeight - 1,
+          parentHeight: cursorSnapshot.indexedThroughHeight,
+          parentHash: cursorSnapshot.indexedThroughHash,
+          successorHeight: parsed.blockHeight,
+          successorHash: parsed.blockHash,
+        }] : []),
+      ],
       blocksProcessed: (cursorSnapshot.blocksProcessed ?? 0) + 1,
       rejectedCount: nextRejectedCount,
       rejectionsByReason,
