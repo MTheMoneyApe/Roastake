@@ -424,7 +424,7 @@ export function createBlockSource(config, deps = {}) {
     if (json?.error) {
       throw new BlockSourceError(
         `RPC JSON error on ${method}: ${json.error.message ?? JSON.stringify(json.error)}`,
-        "RPC_ERROR",
+        method === "block" && json.error.cause?.name === "UNKNOWN_BLOCK" ? "UNKNOWN_BLOCK" : "RPC_ERROR",
         { retryable: true },
       );
     }
@@ -582,23 +582,25 @@ export function createBlockSource(config, deps = {}) {
    * Never silently skips heights if unavailable.
    */
   async function verifyArchivalBlockAvailability(height) {
-    if (archivalEndpoints.length === 0) {
-      return { available: false, block: null, reason: "No approved archival RPC endpoints configured." };
-    }
+    let unknownCount = 0;
     for (const ep of archivalEndpoints) {
       try {
         const blk = await postRpcSingle(ep, "block", { block_id: height });
         if (blk?.header?.height === height && blk?.header?.hash) {
-          return { available: true, endpoint: ep, blockHeader: blk.header };
+          return { available: true, status: "available", endpoint: ep, blockHeader: blk.header };
         }
-      } catch {
-        // try next configured archival endpoint
+      } catch (err) {
+        if (err?.code === "UNKNOWN_BLOCK") unknownCount += 1;
       }
     }
+    const confirmedUnknown = archivalEndpoints.length > 0 && unknownCount === archivalEndpoints.length;
     return {
       available: false,
+      status: confirmedUnknown ? "unknown_block" : "unverified",
       blockHeader: null,
-      reason: `Configured archival RPC endpoints could not verify block #${height}.`,
+      reason: confirmedUnknown
+        ? `All configured archival endpoints returned UNKNOWN_BLOCK for #${height}.`
+        : `Configured archival RPC endpoints could not verify block #${height}.`,
     };
   }
 
