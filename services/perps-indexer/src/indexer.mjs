@@ -222,11 +222,14 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
           typeof blockSource.verifyArchivalBlockAvailability !== "function") throw err;
       // A missing payload alone is not proof of a skipped height.
       const missing = await blockSource.verifyArchivalBlockAvailability(height);
-      if (missing.available) throw err;
+      if (missing.available || missing.status !== "unknown_block") throw err;
       const limit = Math.min(state.lastFinalizedHeight ?? height, height + 8);
       for (let next = height + 1; next <= limit; next += 1) {
         const proof = await blockSource.verifyArchivalBlockAvailability(next);
-        if (!proof.available) continue;
+        if (!proof.available) {
+          if (proof.status !== "unknown_block") throw err;
+          continue;
+        }
         const header = proof.blockHeader;
         if (header?.height !== next ||
             header.prev_height !== cursorSnapshot.indexedThroughHeight ||
