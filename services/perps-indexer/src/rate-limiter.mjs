@@ -53,6 +53,7 @@ export function createRateLimiter(options = {}, deps = {}) {
   let nextAllowedAtMs = 0;
   let totalRequests = 0;
   let rateLimitHits = 0;
+  let otherProviderErrorHits = 0;
   let lastRetryAfterMs = null;
   let consecutiveSuccesses = 0;
   let latencySumMs = 0;
@@ -113,7 +114,8 @@ export function createRateLimiter(options = {}, deps = {}) {
     retryAfterMs = null,
     isRateLimit = true,
   } = {}) {
-    rateLimitHits += 1;
+    if (isRateLimit) rateLimitHits += 1;
+    else otherProviderErrorHits += 1;
     consecutiveSuccesses = 0;
     if (retryAfterMs !== null) {
       lastRetryAfterMs = retryAfterMs;
@@ -145,6 +147,7 @@ export function createRateLimiter(options = {}, deps = {}) {
       requestsLastMinute: recentRequestTimestamps.length,
       totalRequests,
       rateLimitHits,
+      otherProviderErrorHits,
       lastRetryAfterMs,
       avgRequestLatencyMs: latencyCount > 0 ? Math.round(latencySumMs / latencyCount) : null,
     };

@@ -28,6 +28,7 @@ export const APPROVED_TESTNET_RPC_HOSTS = new Set([
   "rpc.testnet.fastnear.com",
   "rpc.testnet.near.org",
   "archival-rpc.testnet.near.org",
+  "archival-rpc.testnet.fastnear.com",
 ]);
 export const DEFAULT_TESTNET_RPC_ENDPOINTS = [
   "https://rpc.testnet.fastnear.com",
