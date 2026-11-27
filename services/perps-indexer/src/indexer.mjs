@@ -212,7 +212,54 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
 
   async function processSingleFinalizedBlock(pipeline, height, cursorSnapshot, fetchBlockCached) {
     const { spec, store, state, transient404Attempts, ignoredMarketIds } = pipeline;
-    const blockPayload = await fetchBlockCached(height);
+    let blockPayload;
+    let verifiedSuccessorHeight = height;
+    try {
+      blockPayload = await fetchBlockCached(height);
+    } catch (err) {
+      if (!["BLOCK_NULL", "BLOCK_NOT_FOUND"].includes(err?.code) ||
+          height !== cursorSnapshot.indexedThroughHeight + 1 ||
+          !cursorSnapshot.indexedThroughHash ||
+          typeof blockSource.verifyArchivalBlockAvailability !== "function") throw err;
+      // A missing payload alone is not proof of a skipped height.
+      const missing = await blockSource.verifyArchivalBlockAvailability(height);
+      if (missing.available || missing.status !== "unknown_block") {
+        console.warn(`[perps-indexer:${spec.slug}] Skip proof rejected #${height}: archival status=${missing.status}`);
+        throw err;
+      }
+      const limit = Math.min(state.lastFinalizedHeight ?? height, height + 8);
+      for (let next = height + 1; next <= limit; next += 1) {
+        const proof = await blockSource.verifyArchivalBlockAvailability(next);
+        if (!proof.available) {
+          if (proof.status !== "unknown_block") {
+            console.warn(`[perps-indexer:${spec.slug}] Skip proof rejected #${next}: successor unverified`);
+            throw err;
+          }
+          continue;
+        }
+        const header = proof.blockHeader;
+        if (header?.height !== next ||
+            header.prev_height !== cursorSnapshot.indexedThroughHeight ||
+            header.prev_hash !== cursorSnapshot.indexedThroughHash) {
+          console.warn(`[perps-indexer:${spec.slug}] Skip proof rejected #${next}: parent continuity mismatch`);
+          throw err;
+        }
+        const candidate = await fetchBlockCached(next);
+        const candidateHeader = candidate?.block?.header;
+        if (candidateHeader?.height !== next ||
+            candidateHeader.hash !== header.hash ||
+            candidateHeader.prev_height !== header.prev_height ||
+            candidateHeader.prev_hash !== header.prev_hash) {
+          console.warn(`[perps-indexer:${spec.slug}] Skip proof rejected #${next}: NEAR Data header mismatch`);
+          throw err;
+        }
+        blockPayload = candidate;
+        verifiedSuccessorHeight = next;
+        console.info(`[perps-indexer:${spec.slug}] Verified skipped heights #${height}..#${next - 1}; parent=${header.prev_hash}; successor=${header.hash}`);
+        break;
+      }
+      if (!blockPayload) throw err;
+    }
 
     const parsed = parseNearDataFinalBlock(blockPayload, {
       contractId: config.contractId,
@@ -223,6 +270,9 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       skipUnscopedProtocolEvents: multiMarketMode,
     });
 
+    if (parsed.blockHeight !== verifiedSuccessorHeight) {
+      throw new Error(`Unexpected finalized block height ${parsed.blockHeight}; expected ${verifiedSuccessorHeight}`);
+    }
     const { duplicateRejections } = store.appendEvents(parsed.events);
     const allRejections = [...parsed.rejected, ...duplicateRejections];
     const rejectionsByReason = { ...(cursorSnapshot.rejectionsByReason ?? {}) };
@@ -251,6 +301,17 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
       indexedThroughHash: parsed.blockHash,
       lastFinalizedHeight: state.lastFinalizedHeight ?? parsed.blockHeight,
       scannedSegments,
+      verifiedSkippedRanges: [
+        ...(cursorSnapshot.verifiedSkippedRanges ?? []),
+        ...(verifiedSuccessorHeight > height ? [{
+          fromHeight: height,
+          toHeight: parsed.blockHeight - 1,
+          parentHeight: cursorSnapshot.indexedThroughHeight,
+          parentHash: cursorSnapshot.indexedThroughHash,
+          successorHeight: parsed.blockHeight,
+          successorHash: parsed.blockHash,
+        }] : []),
+      ],
       blocksProcessed: (cursorSnapshot.blocksProcessed ?? 0) + 1,
       rejectedCount: nextRejectedCount,
       rejectionsByReason,
@@ -488,6 +549,7 @@ export function createPerpsIndexerService(overrides = {}, deps = {}) {
 
       try {
         cursor = await processSingleFinalizedBlock(pipeline, h, cursor, fetchBlockCached);
+        h = cursor.indexedThroughHeight;
         processedBlocks += 1;
         state.consecutiveErrors = 0;
         serviceState.upstreamConsecutiveErrors = 0;

@@ -1,0 +1,24 @@
+name: Indexer repair tests
+on:
+  push:
+    branches: [fix/indexer-skipped-blocks]
+  pull_request:
+    paths:
+      - 'services/perps-indexer/**'
+      - '.github/workflows/indexer-repair-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/perps-indexer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test
