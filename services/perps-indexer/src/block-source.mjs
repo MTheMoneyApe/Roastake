@@ -412,6 +412,15 @@ export function createBlockSource(config, deps = {}) {
       },
       { metered: false },
     );
+    // NEAR archival RPC returns a structured UNKNOWN_BLOCK with HTTP 422.
+    if (method === "block" && res.status === 422) {
+      const payload = await res.json().catch(() => null);
+      if (payload?.jsonrpc === "2.0" &&
+          payload.error?.code === -32000 &&
+          payload.error?.cause?.name === "UNKNOWN_BLOCK") {
+        throw new BlockSourceError("Archival RPC returned UNKNOWN_BLOCK", "UNKNOWN_BLOCK", { retryable: true });
+      }
+    }
     if (!res.ok) {
       const retryAfterMs = parseRetryAfterMs(res.headers?.get?.("retry-after"));
       throw new BlockSourceError(

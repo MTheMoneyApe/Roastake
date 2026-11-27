@@ -23,3 +23,13 @@ test("successor header retains parent continuity evidence",async()=>{
  assert.equal(result.status,"available");
  assert.deepEqual(result.blockHeader,header);
 });
+
+const unknown422 = {jsonrpc:"2.0",error:{name:"HANDLER_ERROR",cause:{info:{},name:"UNKNOWN_BLOCK"},code:-32000,message:"Server error",data:"DB Not Found Error: BLOCK HEIGHT: 277836283"},id:"diagnostic"};
+test("real NEAR archival HTTP 422 UNKNOWN_BLOCK is recognized",async()=>{
+ assert.equal((await source(async()=>json(unknown422,422)).verifyArchivalBlockAvailability(277836283)).status,"unknown_block");
+});
+test("HTTP 422 without explicit proof and other HTTP errors remain unverified",async()=>{
+ for(const response of [()=>json({},422),()=>new Response("invalid",{status:422}),()=>json(unknown422,429),()=>json(unknown422,503),()=>json({...unknown422,error:{...unknown422.error,code:-32602}},422)]){
+  assert.equal((await source(async()=>response()).verifyArchivalBlockAvailability(277836283)).status,"unverified");
+ }
+});
